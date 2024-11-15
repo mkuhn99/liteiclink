@@ -19,16 +19,21 @@ def packet_description(dw):
     param_layout   = [("port", 8), ("length", 16)]
     return stream.EndpointDescription(payload_layout, param_layout)
 
+def packet_description_(payload_layout):
+    param_layout = [("port", 8), ("length", 16)]
+    return stream.EndpointDescription(payload_layout, param_layout)
+
 def phy_description(dw):
     layout = [("data", dw)]
     return stream.EndpointDescription(layout)
 
 # Packetizer ---------------------------------------------------------------------------------------
-
+# TODO: rewrite for other packet_descriptions
 class Packetizer(LiteXModule):
-    def __init__(self):
-        self.sink   = sink   = stream.Endpoint(packet_description(32))
-        self.source = source = stream.Endpoint(phy_description(32))
+    def __init__(self, packet_descr=packet_description(32)):
+        self.sink   = sink   = stream.Endpoint(packet_descr)
+        dw = sum([c[1] for c in sink.description.payload_layout])
+        self.source = source = stream.Endpoint(phy_description(dw))
 
         # # #
 
@@ -40,6 +45,12 @@ class Packetizer(LiteXModule):
 
         # FSM.
         # ----
+        i = 0
+        data_write = ()
+        for c in sink.description.payload_layout:
+            c_sig = getattr(sink, c[0])
+            c_width = c[1]
+            data_write += (source.data[i:i+c_width].eq(c_sig),)
         self.fsm = fsm = FSM(reset_state="PREAMBLE")
         fsm.act("PREAMBLE",
             If(sink.valid,
@@ -60,7 +71,8 @@ class Packetizer(LiteXModule):
         )
         fsm.act("DATA",
             source.valid.eq(sink.valid),
-            source.data.eq(sink.data),
+            # source.data.eq(sink.data),
+            data_write,
             sink.ready.eq(source.ready),
             If(source.ready & sink.last,
                 NextState("PREAMBLE")
@@ -70,9 +82,10 @@ class Packetizer(LiteXModule):
 # Depacketizer -------------------------------------------------------------------------------------
 
 class Depacketizer(LiteXModule):
-    def __init__(self, clk_freq, timeout=10):
-        self.sink   = sink   = stream.Endpoint(phy_description(32))
-        self.source = source = stream.Endpoint(packet_description(32))
+    def __init__(self, clk_freq, timeout=10, packet_descr=packet_description(32)):
+        self.source   = source   = stream.Endpoint(packet_descr)
+        dw = sum([c[1] for c in source.description.payload_layout])
+        self.sink = sink = stream.Endpoint(phy_description(dw))
 
         # # #
 
@@ -94,6 +107,13 @@ class Depacketizer(LiteXModule):
 
         # FSM.
         # ----
+        i = 0
+        data_write = ()
+        for c in source.description.payload_layout:
+            c_sig = getattr(source, c[0])
+            c_width = c[1]
+            data_write += (sink.data[i:i+c_width].eq(c_sig),)
+
         self.fsm = fsm = FSM(reset_state="PREAMBLE")
         fsm.act("PREAMBLE",
             sink.ready.eq(1),
@@ -117,7 +137,7 @@ class Depacketizer(LiteXModule):
             source.last.eq(count == (length[2:] - 1)),
             source.port.eq(port),
             source.length.eq(length),
-            source.data.eq(sink.data),
+            data_write,
             sink.ready.eq(source.ready),
             If(timer.done,
                 NextState("PREAMBLE")
