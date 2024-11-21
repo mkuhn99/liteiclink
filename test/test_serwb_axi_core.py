@@ -18,9 +18,9 @@ from litex.gen.sim import *
 from litex.soc.interconnect import stream
 
 from liteiclink.serwb import scrambler
-from liteiclink.serwb.core import SERWBCore
+from liteiclink.serwb.core import SERWBCoreAXILite
 
-from litex.soc.interconnect.wishbone import SRAM
+from litex.soc.interconnect.axi import AXILiteSRAM
 
 # Fake Init/Serdes/PHY -----------------------------------------------------------------------------
 
@@ -30,13 +30,13 @@ class FakeInit(LiteXModule):
 
 
 class FakeSerdes(LiteXModule):
-    def __init__(self):
+    def __init__(self, dw):
         self.tx_ce = Signal()
         self.tx_k  = Signal(4)
-        self.tx_d  = Signal(32)
+        self.tx_d  = Signal(dw)
         self.rx_ce = Signal()
         self.rx_k  = Signal(4)
-        self.rx_d  = Signal(32)
+        self.rx_d  = Signal(dw)
 
         # # #
 
@@ -49,14 +49,14 @@ class FakeSerdes(LiteXModule):
         ]
 
 class FakePHY(LiteXModule):
-    def __init__(self):
-        self.sink   = sink   = stream.Endpoint([("data", 32)])
-        self.source = source = stream.Endpoint([("data", 32)])
+    def __init__(self, dw:int):
+        self.sink   = sink   = stream.Endpoint([("data", dw)])
+        self.source = source = stream.Endpoint([("data", dw)])
 
         # # #
 
         self.init   = FakeInit()
-        self.serdes = FakeSerdes()
+        self.serdes = FakeSerdes(dw)
 
         # TX dataflow
         self.comb += [
@@ -88,33 +88,36 @@ class DUTScrambler(LiteXModule):
 
 class DUTCore(LiteXModule):
     def __init__(self, **kwargs):
-        # Wishbone slave
-        phy_slave   = FakePHY()
-        serwb_slave = SERWBCore(phy_slave, int(1e6), mode="slave")
-        self.submodules += phy_slave, serwb_slave
+        # AXI slave
+        phy_slaves = {k:FakePHY(dw=dw) for k, dw in {'aw':40, 'w':40, 'ar':40, 'r':40, 'b':32}.items()}
+        serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave")
+        self.submodules += serwb_slave
 
-        # Wishbone master
-        phy_master   = FakePHY()
-        serwb_master = SERWBCore(phy_master, int(1e6), mode="master")
-        self.submodules += phy_master, serwb_master
 
-        # Connect phy
-        self.comb += [
-            phy_master.serdes.rx_ce.eq(phy_slave.serdes.tx_ce),
-            phy_master.serdes.rx_k.eq(phy_slave.serdes.tx_k),
-            phy_master.serdes.rx_d.eq(phy_slave.serdes.tx_d),
+        # AXI master
 
-            phy_slave.serdes.rx_ce.eq(phy_master.serdes.tx_ce),
-            phy_slave.serdes.rx_k.eq(phy_master.serdes.tx_k),
-            phy_slave.serdes.rx_d.eq(phy_master.serdes.tx_d)
-        ]
+        phy_masters = {k:FakePHY(dw=dw) for k, dw in {'aw':40, 'w':40, 'ar':40, 'r':40, 'b':32}.items()}
+        serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master")
+        self.submodules += serwb_master
+        for k in ['aw', 'w', 'ar', 'r', 'b']:
+            self.submodules += phy_slaves[k], phy_masters[k]
+            # Connect phy
+            self.comb += [
+                phy_masters[k].serdes.rx_ce.eq(phy_slaves[k].serdes.tx_ce),
+                phy_masters[k].serdes.rx_k.eq(phy_slaves[k].serdes.tx_k),
+                phy_masters[k].serdes.rx_d.eq(phy_slaves[k].serdes.tx_d),
 
-        # Add wishbone sram to wishbone master
-        sram = SRAM(1024, bus=serwb_master.etherbone.wishbone.bus)
+                phy_slaves[k].serdes.rx_ce.eq(phy_masters[k].serdes.tx_ce),
+                phy_slaves[k].serdes.rx_k.eq(phy_masters[k].serdes.tx_k),
+                phy_slaves[k].serdes.rx_d.eq(phy_masters[k].serdes.tx_d)
+            ]
+
+        # Add AXI sram to AXI master
+        sram = AXILiteSRAM(1024, bus=serwb_master.bus)
         self.submodules += sram
 
-        # Expose wishbone slave
-        self.wishbone = serwb_slave.etherbone.wishbone.bus
+        # Expose AXI slave
+        self.axi = serwb_slave.bus
 
 # Test SERWB Core ----------------------------------------------------------------------------------
 
@@ -160,11 +163,11 @@ class TestSERWBCore(unittest.TestCase):
 
             # Write
             for i in range(data_length):
-                yield from dut.wishbone.write(data_base + i, datas_w[i])
+                yield from dut.axi.write((data_base + i*4), datas_w[i])
 
             # Read
             for i in range(data_length):
-                datas_r.append((yield from dut.wishbone.read(data_base + i)))
+                datas_r.append((yield from dut.axi.read((data_base + i*4)))[0])
 
             # Check
             print(datas_w)
@@ -175,5 +178,5 @@ class TestSERWBCore(unittest.TestCase):
 
         dut = DUTCore()
         dut.errors = 0
-        run_simulation(dut, generator(dut))
+        run_simulation(dut, generator(dut), vcd_name='test.vcd')
         self.assertEqual(dut.errors, 0)
