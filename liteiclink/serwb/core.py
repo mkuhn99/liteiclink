@@ -14,7 +14,7 @@ from litex.soc.interconnect.axi    import AXILiteInterface, ax_lite_description,
 from litex.soc.interconnect.packet import Arbiter, Dispatcher
 
 from liteiclink.serwb.packet    import packet_description, packet_description_
-from liteiclink.serwb.packet    import Packetizer, Depacketizer
+from liteiclink.serwb.packet    import Packetizer, Depacketizer, AxiDepacketizer, AxiPacketizer
 from liteiclink.serwb.etherbone import Etherbone
 
 # SERWB Core ---------------------------------------------------------------------------------------
@@ -123,22 +123,22 @@ class SERWBCoreAXILite(LiteXModule):
 
         # Buffering.
         # ----------
-        self.aw_fifo           = aw_fifo    = ResetInserter()(stream.SyncFIFO([('data', sum([c[1] for c in ax_lite_description(32)]))], buffer_depth, buffered=True))
-        self.w_fifo            = w_fifo     = ResetInserter()(stream.SyncFIFO([('data', sum([c[1] for c in w_lite_description(32)]))], buffer_depth, buffered=True))
-        self.ar_fifo           = ar_fifo    = ResetInserter()(stream.SyncFIFO([('data', sum([c[1] for c in ax_lite_description(32)]))], buffer_depth, buffered=True))
-        self.b_fifo            = b_fifo     = ResetInserter()(stream.SyncFIFO([('data', sum([c[1] for c in b_lite_description()]))], buffer_depth, buffered=True))
-        self.r_fifo            = r_fifo     = ResetInserter()(stream.SyncFIFO([('data', sum([c[1] for c in r_lite_description(32)]))], buffer_depth, buffered=True))
+        self.aw_fifo           = aw_fifo    = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
+        self.w_fifo            = w_fifo     = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
+        self.ar_fifo           = ar_fifo    = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
+        self.b_fifo            = b_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
+        self.r_fifo            = r_fifo     = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
 
         # Packetizer / Depacketizer.
         # --------------------------
 
         #TODO: make smart loop
-        if mode=="master":
-            self.aw_packetizer      = aw_packetizer     = ResetInserter()(Packetizer(packet_descr=packet_description_(ax_lite_description(32))))
-            self.w_packetizer       = w_packetizer      = ResetInserter()(Packetizer(packet_descr=packet_description_(w_lite_description(32))))
-            self.ar_packetizer      = ar_packetizer     = ResetInserter()(Packetizer(packet_descr=packet_description_(ax_lite_description(32))))
-            self.b_depacketizer     = b_depacketizer    = ResetInserter()(Depacketizer(clk_freq, packet_descr=packet_description_(b_lite_description())))
-            self.r_depacketizer     = r_depacketizer    = ResetInserter()(Depacketizer(clk_freq, packet_descr=packet_description_(r_lite_description(32))))
+        if mode=="slave":
+            self.aw_packetizer      = aw_packetizer     = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(ax_lite_description(32))))
+            self.w_packetizer       = w_packetizer      = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(w_lite_description(32))))
+            self.ar_packetizer      = ar_packetizer     = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(ax_lite_description(32))))
+            self.b_depacketizer     = b_depacketizer    = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(b_lite_description())))
+            self.r_depacketizer     = r_depacketizer    = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(r_lite_description(32))))
             self.comb += [
                 # AXIInterfaceLite <---> Core.
                 self.bus.aw.connect(aw_packetizer.sink),
@@ -166,17 +166,18 @@ class SERWBCoreAXILite(LiteXModule):
             ]
 
         else:
-            self.aw_depacketizer    = aw_depacketizer       = ResetInserter()(Depacketizer(clk_freq, packet_descr=packet_description_(ax_lite_description(32))))
-            self.w_depacketizer     = w_depacketizer        = ResetInserter()(Depacketizer(clk_freq, packet_descr=packet_description_(w_lite_description(32))))
-            self.ar_depacketizer    = ar_depacketizer       = ResetInserter()(Depacketizer(clk_freq, packet_descr=packet_description_(ax_lite_description(32))))
-            self.b_packetizer       = b_packetizer          = ResetInserter()(Packetizer(packet_descr=packet_description_(b_lite_description())))
-            self.r_packetizer       = r_packetizer          = ResetInserter()(Packetizer(packet_descr=packet_description_(r_lite_description(32))))
+            self.aw_depacketizer    = aw_depacketizer       = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(ax_lite_description(32))))
+            self.w_depacketizer     = w_depacketizer        = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(w_lite_description(32))))
+            self.ar_depacketizer    = ar_depacketizer       = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(ax_lite_description(32))))
+            self.b_packetizer       = b_packetizer          = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(b_lite_description())))
+            self.r_packetizer       = r_packetizer          = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(r_lite_description(32))))
             self.comb += [
                 # AXIInterfaceLite <---> Core
                 self.bus.b.connect(b_packetizer.sink),
                 self.bus.r.connect(r_packetizer.sink),
                 w_depacketizer.source.connect(self.bus.w, omit={'length', 'port'}),
                 aw_depacketizer.source.connect(self.bus.aw, omit={'length', 'port'}),
+                #self.bus.aw.connect(aw_depacketizer.source, omit={'length', 'port'}),
                 ar_depacketizer.source.connect(self.bus.ar, omit={'length', 'port'}),
                 # Core -> PHY.
                 b_packetizer.source.connect(b_fifo.sink),

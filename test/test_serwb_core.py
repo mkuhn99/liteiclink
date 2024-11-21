@@ -175,5 +175,5 @@ class TestSERWBCore(unittest.TestCase):
 
         dut = DUTCore()
         dut.errors = 0
-        run_simulation(dut, generator(dut))
+        run_simulation(dut, generator(dut), vcd_name="test.vcd")
         self.assertEqual(dut.errors, 0)
