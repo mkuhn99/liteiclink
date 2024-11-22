@@ -68,20 +68,20 @@ class _S7SerdesClocking(LiteXModule):
 # S7 SerDes TX -------------------------------------------------------------------------------------
 
 class _S7SerdesTX(LiteXModule):
-    def __init__(self, pads):
+    def __init__(self, pads, dw=32):
         # Control
         self.idle  = idle  = Signal()
         self.comma = comma = Signal()
 
         # Datapath.
-        self.sink = sink = stream.Endpoint([("data", 32)])
+        self.sink = sink = stream.Endpoint([("data", dw)])
 
         # # #
 
 
         # Datapath.
         # ---------
-        self.datapath = datapath = TXDatapath(8)
+        self.datapath = datapath = TXDatapath(8, packet_dw=dw)
         self.comb += [
             sink.connect(datapath.sink),
             datapath.source.ready.eq(1),
@@ -122,7 +122,7 @@ class _S7SerdesTX(LiteXModule):
 # S7 SerDes RX -------------------------------------------------------------------------------------
 
 class _S7SerdesRX(LiteXModule):
-    def __init__(self, pads):
+    def __init__(self, pads, dw=32):
         # Control.
         self.delay_rst = delay_rst = Signal()
         self.delay_inc = delay_inc = Signal()
@@ -133,7 +133,7 @@ class _S7SerdesRX(LiteXModule):
         self.comma = comma = Signal()
 
         # Datapath
-        self.source = source = stream.Endpoint([("data", 32)])
+        self.source = source = stream.Endpoint([("data", dw)])
 
         # # #
 
@@ -193,7 +193,7 @@ class _S7SerdesRX(LiteXModule):
 
         # Datapath.
         # ---------
-        self.datapath = datapath = RXDatapath(8)
+        self.datapath = datapath = RXDatapath(8, packet_dw=dw)
         self.comb += [
             datapath.sink.valid.eq(1),
             datapath.sink.data.eq(data),
@@ -207,8 +207,10 @@ class _S7SerdesRX(LiteXModule):
 
 @ResetInserter()
 class S7Serdes(LiteXModule):
-    def __init__(self, pads, mode="master"):
+    def __init__(self, pads, mode="master", dw=32):
+        assert dw % 8 == 0, f"dw={dw} not byte aligned"
         assert mode in ["master", "slave"]
-        self.clocking = _S7SerdesClocking(pads, mode)
-        self.tx       = _S7SerdesTX(pads)
-        self.rx       = _S7SerdesRX(pads)
+        if hasattr(pads, "clk_p"):
+            self.clocking = _S7SerdesClocking(pads, mode)
+        self.tx       = _S7SerdesTX(pads, dw=dw)
+        self.rx       = _S7SerdesRX(pads, dw=dw)

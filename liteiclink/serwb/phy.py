@@ -395,9 +395,9 @@ class _SerdesControl(LiteXModule):
 # SERWB PHY ----------------------------------------------------------------------------------------
 
 class SERWBPHY(LiteXModule):
-    def __init__(self, device, pads, mode="master", init_timeout=2**16, clk="sys", clk4x="sys4x", clk_ratio="1:1", clk_delay_taps=0, rx_delay_taps=0):
-        self.sink   = sink   = stream.Endpoint([("data", 32)])
-        self.source = source = stream.Endpoint([("data", 32)])
+    def __init__(self, device, pads, mode="master", init_timeout=2**16, clk="sys", clk4x="sys4x", clk_ratio="1:1", clk_delay_taps=0, rx_delay_taps=0, dw=32):
+        self.sink   = sink   = stream.Endpoint([("data", dw)])
+        self.source = source = stream.Endpoint([("data", dw)])
         assert mode in ["master", "slave"]
 
         # # #
@@ -415,7 +415,7 @@ class SERWBPHY(LiteXModule):
         elif device[:4] in ["xc7a", "xc7k", "xc7v", "xc7z"]:
             assert clk_ratio == "1:1"
             taps = 32
-            self.serdes = S7Serdes(pads, mode)
+            self.serdes = S7Serdes(pads, mode, dw=dw)
 
 
         # Efinix Titanium.

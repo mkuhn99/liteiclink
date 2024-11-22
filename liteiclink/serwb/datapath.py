@@ -19,11 +19,11 @@ from liteiclink.serwb.scrambler import Scrambler, Descrambler
 # TX Datapath --------------------------------------------------------------------------------------
 
 class TXDatapath(LiteXModule):
-    def __init__(self, phy_dw, with_scrambling=False):
+    def __init__(self, phy_dw, with_scrambling=False, packet_dw=32):
         self.idle   = idle   = Signal()
         self.comma  = comma  = Signal()
         self.wait   = wait   = Signal()
-        self.sink   = sink   = stream.Endpoint([("data", 32)])
+        self.sink   = sink   = stream.Endpoint([("data", packet_dw)])
         self.source = source = stream.Endpoint([("data", phy_dw)])
 
         # # #
@@ -35,11 +35,13 @@ class TXDatapath(LiteXModule):
 
         # Line coding.
         # ------------
-        self.encoder = encoder = StreamEncoder(nwords=4)
+        nwords= packet_dw // 8
+        self.encoder = encoder = StreamEncoder(nwords=nwords)
 
         # Converter.
         # ----------
-        self.converter = converter = stream.Converter(40, phy_dw)
+        print(phy_dw, packet_dw, nwords)
+        self.converter = converter = stream.Converter(10*nwords, phy_dw)
 
         # Data-Path.
         # ----------
@@ -127,10 +129,10 @@ class RXAligner(LiteXModule):
 # RXDatapath ---------------------------------------------------------------------------------------
 
 class RXDatapath(LiteXModule):
-    def __init__(self, phy_dw, with_scrambling=False):
+    def __init__(self, phy_dw, with_scrambling=False, packet_dw=32):
         self.shift_inc  = shift_inc  = Signal()
         self.sink       = sink       = stream.Endpoint([("data", phy_dw)])
-        self.source     = source     = stream.Endpoint([("data", 32)])
+        self.source     = source     = stream.Endpoint([("data", packet_dw)])
         self.idle       = idle       = Signal()
         self.comma      = comma      = Signal()
         self.wait       = wait       = Signal()
@@ -143,11 +145,12 @@ class RXDatapath(LiteXModule):
 
         # Converter.
         # ----------
-        self.converter = converter = stream.Converter(phy_dw, 40)
+        nwords = packet_dw // 8
+        self.converter = converter = stream.Converter(phy_dw, 10*nwords)
 
         # Line Coding.
         # ------------
-        self.decoder = decoder = StreamDecoder(nwords=4)
+        self.decoder = decoder = StreamDecoder(nwords=nwords)
 
         # Descrambler.
         # ------------
