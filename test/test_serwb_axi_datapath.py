@@ -19,7 +19,7 @@ from litex.soc.interconnect import stream
 
 from liteiclink.serwb import scrambler
 from liteiclink.serwb.core import SERWBCoreAXILite
-
+from liteiclink.serwb.datapath import TXDatapath, RXDatapath
 from litex.soc.interconnect.axi import AXILiteSRAM
 
 # Fake Init/Serdes/PHY -----------------------------------------------------------------------------
@@ -31,22 +31,25 @@ class FakeInit(LiteXModule):
 
 class FakeSerdes(LiteXModule):
     def __init__(self, dw):
-        self.tx_ce = Signal()
-        self.tx_k  = Signal(4)
-        self.tx_d  = Signal(dw)
-        self.rx_ce = Signal()
-        self.rx_k  = Signal(4)
-        self.rx_d  = Signal(dw)
+        self.tx_dp = TXDatapath(8, packet_dw=dw)
+        self.rx_dp = RXDatapath(8, packet_dw=dw)
+        self.comb += [self.rx_dp.shift_inc.eq(0)]
+        # self.tx_ce = Signal()
+        # # self.tx_k  = Signal(4)
+        # # self.tx_d  = Signal(dw)
+        # self.rx_ce = Signal()
+        # # self.rx_k  = Signal(4)
+        # # self.rx_d  = Signal(dw)
 
-        # # #
+        # # # #
 
-        data_ce = Signal(5, reset=0b00001)
-        self.sync += data_ce.eq(Cat(data_ce[1:], data_ce[0]))
+        # data_ce = Signal(5, reset=0b00001)
+        # self.sync += data_ce.eq(Cat(data_ce[1:], data_ce[0]))
 
-        self.comb += [
-            self.tx_ce.eq(data_ce[0]),
-            self.rx_ce.eq(data_ce[0])
-        ]
+        # self.comb += [
+        #     self.tx_ce.eq(data_ce[0]),
+        #     self.rx_ce.eq(data_ce[0])
+        # ]
 
 class FakePHY(LiteXModule):
     def __init__(self, dw:int):
@@ -57,22 +60,32 @@ class FakePHY(LiteXModule):
 
         self.init   = FakeInit()
         self.serdes = FakeSerdes(dw)
-
+        self.first_invalid = Signal()
         # TX dataflow
         self.comb += [
             If(self.init.ready,
-                sink.ready.eq(self.serdes.tx_ce),
+                sink.ready.eq(1),
+                self.serdes.tx_dp.invalid.eq(1),
                 If(sink.valid,
-                    self.serdes.tx_d.eq(sink.data)
+                    self.serdes.tx_dp.invalid.eq(0),
+                    sink.connect(self.serdes.tx_dp.sink),
+                    #self.serdes.tx_dp.sink.valid.eq(sink.valid)
                 )
             )
         ]
 
         # RX dataflow
         self.comb += [
+
+            source.valid.eq(~self.serdes.rx_dp.invalid & self.first_invalid & self.serdes.rx_dp.decoder.source.valid),
             If(self.init.ready,
-                source.valid.eq(self.serdes.rx_ce),
-                source.data.eq(self.serdes.rx_d)
+                self.serdes.rx_dp.source.connect(source, omit={'valid'}),
+            ),
+        ]
+        self.sync += [
+
+            If(self.serdes.rx_dp.invalid & ~self.first_invalid,
+               self.first_invalid.eq(1)
             )
         ]
 
@@ -89,27 +102,29 @@ class DUTScrambler(LiteXModule):
 class DUTCore(LiteXModule):
     def __init__(self, **kwargs):
         # AXI slave
-        phy_slaves = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
+        self.phy_slaves = phy_slaves = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
         serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave")
         self.submodules += serwb_slave
 
 
         # AXI master
 
-        phy_masters = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
+        self.phy_masters = phy_masters = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
         serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master")
         self.submodules += serwb_master
         for k in ['aw', 'w', 'ar', 'r', 'b']:
             self.submodules += phy_slaves[k], phy_masters[k]
             # Connect phy
             self.comb += [
-                phy_masters[k].serdes.rx_ce.eq(phy_slaves[k].serdes.tx_ce),
-                phy_masters[k].serdes.rx_k.eq(phy_slaves[k].serdes.tx_k),
-                phy_masters[k].serdes.rx_d.eq(phy_slaves[k].serdes.tx_d),
+                #phy_masters[k].serdes.rx_ce.eq(phy_slaves[k].serdes.tx_ce),
+                #phy_masters[k].serdes.rx_dp.sink.data.eq(phy_slaves[k].serdes.tx_dp.source.data),
+                phy_slaves[k].serdes.tx_dp.source.connect(phy_masters[k].serdes.rx_dp.sink, omit={'valid', 'ready'}),
+                #phy_masters[k].serdes.rx_d.eq(phy_slaves[k].serdes.tx_d),
 
-                phy_slaves[k].serdes.rx_ce.eq(phy_masters[k].serdes.tx_ce),
-                phy_slaves[k].serdes.rx_k.eq(phy_masters[k].serdes.tx_k),
-                phy_slaves[k].serdes.rx_d.eq(phy_masters[k].serdes.tx_d)
+                #phy_slaves[k].serdes.rx_ce.eq(phy_masters[k].serdes.tx_ce),
+                # phy_slaves[k].serdes.rx_dp.sink.data.eq(phy_masters[k].serdes.tx_dp.source.data),
+                phy_masters[k].serdes.tx_dp.source.connect(phy_slaves[k].serdes.rx_dp.sink, omit={'valid', 'ready'}),
+                #phy_slaves[k].serdes.rx_d.eq(phy_masters[k].serdes.tx_d)
             ]
 
         # Add AXI sram to AXI master
@@ -118,6 +133,14 @@ class DUTCore(LiteXModule):
 
         # Expose AXI slave
         self.axi = serwb_slave.bus
+
+        self.rx = RXDatapath(8)
+        self.tx = TXDatapath(8)
+        self.comb += [
+            self.tx.source.connect(self.rx.sink, omit={'valid'}),
+            #self.rx.sink.valid.eq(1),
+            # self.rx.converter.source.valid.eq(1),
+        ]
 
 # Test SERWB Core ----------------------------------------------------------------------------------
 
@@ -160,9 +183,26 @@ class TestSERWBCore(unittest.TestCase):
             data_length = 6
             datas_w     = [prng.randrange(2**32) for i in range(data_length)]
             datas_r     = []
+            # Init:
 
+            yield dut.tx.invalid.eq(1)
+            while not (yield dut.rx.sink.data == 0x00):
+                yield
+            yield
+            for k in ['aw', 'w', 'ar', 'r', 'b']:
+                yield dut.rx.sink.valid.eq(1)
+                yield dut.phy_masters[k].serdes.rx_dp.sink.valid.eq(1)
+                yield dut.phy_slaves[k].serdes.rx_dp.sink.valid.eq(1)
+                yield dut.phy_masters[k].serdes.rx_dp.sink.ready.eq(1)
+                yield dut.phy_slaves[k].serdes.rx_dp.sink.ready.eq(1)
+                yield dut.phy_masters[k].serdes.tx_dp.source.ready.eq(1)
+                yield dut.phy_slaves[k].serdes.tx_dp.source.ready.eq(1)
+            for k in ['aw', 'w', 'ar', 'r', 'b']:
+                yield dut.phy_masters[k].serdes.tx_dp.invalid.eq(1)
+                yield dut.phy_slaves[k].serdes.tx_dp.invalid.eq(1)
             # Write
             for i in range(data_length):
+                print(i)
                 yield from dut.axi.write((data_base + i*4), datas_w[i])
 
             # Read
@@ -175,8 +215,19 @@ class TestSERWBCore(unittest.TestCase):
             for i in range(data_length):
                 if datas_r[i] != datas_w[i]:
                     dut.errors += 1
-
+            # # Write
+            # for i in range(data_length):
+            #     print(i)
+            #     yield from dut.axi.write((data_base + i*4), datas_w[i])
+            #     if (yield from dut.axi.read((data_base + i*4)))[0] != datas_w[i]:
+            #         dut.errors += 1
+            # while not (yield dut.rx.sink.data == 0xB9):
+            #     yield
+            # yield dut.rx.sink.valid.eq(1)
+            # while not (yield dut.rx.invalid):
+            #     yield
+            
         dut = DUTCore()
         dut.errors = 0
-        run_simulation(dut, generator(dut), vcd_name='test.vcd')
+        run_simulation(dut, generator(dut), vcd_name='test_axi_datapath.vcd')
         self.assertEqual(dut.errors, 0)
