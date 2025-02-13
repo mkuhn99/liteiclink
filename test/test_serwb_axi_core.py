@@ -89,17 +89,25 @@ class DUTScrambler(LiteXModule):
 class DUTCore(LiteXModule):
     def __init__(self, **kwargs):
         # AXI slave
-        phy_slaves = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
+        self.slave_aw_phy = FakePHY(32)
+        self.slave_w_phy = FakePHY(32)
+        self.slave_r_phy = FakePHY(32)
+        self.slave_ctrl_phy = FakePHY(32)
+        self.phy_slaves = phy_slaves = {'aw':self.slave_aw_phy, 'w':self.slave_w_phy, 'r':self.slave_r_phy, 'ctrl':self.slave_ctrl_phy}
         serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave")
         self.submodules += serwb_slave
 
 
         # AXI master
+        self.master_aw_phy = FakePHY(32)
+        self.master_w_phy = FakePHY(32)
+        self.master_r_phy = FakePHY(32)
+        self.master_ctrl_phy = FakePHY(32)
 
-        phy_masters = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
+        self.phy_masters = phy_masters = {'w':self.master_w_phy, 'aw':self.master_aw_phy, 'r':self.master_r_phy, 'ctrl':self.master_ctrl_phy}
         serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master")
         self.submodules += serwb_master
-        for k in ['aw', 'w', 'ar', 'r', 'b']:
+        for k in ['aw', 'w', 'r', 'ctrl']:
             self.submodules += phy_slaves[k], phy_masters[k]
             # Connect phy
             self.comb += [
@@ -117,7 +125,8 @@ class DUTCore(LiteXModule):
         self.submodules += sram
 
         # Expose AXI slave
-        self.axi = serwb_slave.bus
+        self.slave_axi = serwb_slave.bus
+        self.master_axi = serwb_master.bus
 
 # Test SERWB Core ----------------------------------------------------------------------------------
 
@@ -163,11 +172,11 @@ class TestSERWBCore(unittest.TestCase):
 
             # Write
             for i in range(data_length):
-                yield from dut.axi.write((data_base + i*4), datas_w[i])
+                yield from dut.slave_axi.write((data_base + i*4), datas_w[i])
 
             # Read
             for i in range(data_length):
-                datas_r.append((yield from dut.axi.read((data_base + i*4)))[0])
+                datas_r.append((yield from dut.slave_axi.read((data_base + i*4)))[0])
 
             # Check
             print(datas_w)
@@ -178,5 +187,5 @@ class TestSERWBCore(unittest.TestCase):
 
         dut = DUTCore()
         dut.errors = 0
-        run_simulation(dut, generator(dut), vcd_name='test.vcd')
+        run_simulation(dut, generator(dut), vcd_name='test_axi_core.vcd')
         self.assertEqual(dut.errors, 0)

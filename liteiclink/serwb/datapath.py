@@ -23,6 +23,7 @@ class TXDatapath(LiteXModule):
         self.idle   = idle   = Signal()
         self.comma  = comma  = Signal()
         self.wait   = wait   = Signal()
+        self.invalid    = invalid = Signal()
         self.sink   = sink   = stream.Endpoint([("data", packet_dw)])
         self.source = source = stream.Endpoint([("data", phy_dw)])
 
@@ -40,7 +41,6 @@ class TXDatapath(LiteXModule):
 
         # Converter.
         # ----------
-        print(phy_dw, packet_dw, nwords)
         self.converter = converter = stream.Converter(10*nwords, phy_dw)
 
         # Data-Path.
@@ -84,6 +84,14 @@ class TXDatapath(LiteXModule):
             encoder.sink.valid.eq(1),
             encoder.sink.k.eq(0b1),
             encoder.sink.d.eq(K(28, 1)),
+        )
+
+        # Encode Invalid (K28.1).
+        # --------------------
+        self.comb += If(invalid,
+            encoder.sink.valid.eq(1),
+            encoder.sink.k.eq(0b1),
+            encoder.sink.d.eq(K(28, 0)),
         )
 
 # RX Aligner ---------------------------------------------------------------------------------------
@@ -136,6 +144,7 @@ class RXDatapath(LiteXModule):
         self.idle       = idle       = Signal()
         self.comma      = comma      = Signal()
         self.wait       = wait       = Signal()
+        self.invalid    = invalid    = Signal()
 
         # # #
 
@@ -205,5 +214,14 @@ class RXDatapath(LiteXModule):
             wait.eq(
                 (decoder.source.k == 1) &
                 (decoder.source.d == K(28, 1))
+            )
+        )
+
+        # Decode Invalid (K28.0).
+        # --------------------
+        self.comb += If(decoder.source.valid,
+            invalid.eq(
+                (decoder.source.k == 1) &
+                (decoder.source.d == K(28, 0))
             )
         )

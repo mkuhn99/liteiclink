@@ -44,7 +44,18 @@ class _SerdesMasterInit(LiteXModule):
         self.delay_max_found = delay_max_found = Signal()
         self.shift           = shift           = Signal(max=40)
         self.phase_sel       = phase_sel       = Signal(2)
-
+        self.master_debug_reset    = Signal()
+        self.master_debug_idle     = Signal()
+        self.master_debug_reset_slave = Signal()
+        self.master_debug_send_pattern = Signal()
+        self.master_debug_wait_stable = Signal()
+        self.master_debug_check_pattern = Signal()
+        self.master_debug_inc_delay_shift = Signal()
+        self.master_debug_inc_phase_sel = Signal()
+        self.master_debug_check_sampling_window = Signal()
+        self.master_debug_configure_sampling_window = Signal()
+        self.master_debug_ready = Signal()
+        self.master_debug_error = Signal()
         # Timer.
         # ------
         self.timer = timer = WaitTimer(timeout)
@@ -53,10 +64,12 @@ class _SerdesMasterInit(LiteXModule):
         # ----
         self.fsm = fsm = FSM(reset_state="RESET")
         fsm.act("RESET",
+            self.master_debug_reset.eq(1),
             NextValue(phase_sel, 0),
             NextState("IDLE")
         )
         fsm.act("IDLE",
+            self.master_debug_idle.eq(1),
             NextValue(delay,           0),
             NextValue(delay_min,       0),
             NextValue(delay_min_found, 0),
@@ -68,6 +81,7 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.idle.eq(1)
         )
         fsm.act("RESET-SLAVE",
+            self.master_debug_reset_slave.eq(1),
             timer.wait.eq(1),
             If(timer.done,
                 timer.wait.eq(0),
@@ -76,6 +90,7 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.idle.eq(1)
         )
         fsm.act("SEND-PATTERN",
+            self.master_debug_send_pattern.eq(1),
             If(~serdes.rx.idle,
                 timer.wait.eq(1),
                 If(timer.done,
@@ -85,6 +100,7 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.comma.eq(1)
         )
         fsm.act("WAIT-STABLE",
+            self.master_debug_wait_stable.eq(1),
             timer.wait.eq(1),
             If(timer.done,
                 timer.wait.eq(0),
@@ -93,6 +109,7 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.comma.eq(1)
         )
         fsm.act("CHECK-PATTERN",
+            self.master_debug_check_pattern.eq(1),
             If(~delay_min_found,
                 If(serdes.rx.comma,
                     timer.wait.eq(1),
@@ -116,6 +133,7 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.comma.eq(1)
         )
         fsm.act("INC-DELAY-SHIFT",
+            self.master_debug_inc_delay_shift.eq(1),
             NextState("WAIT-STABLE"),
             If(delay == (taps - 1),
                 If(shift == (40 - 1),
@@ -139,6 +157,7 @@ class _SerdesMasterInit(LiteXModule):
         if hasattr(serdes.rx, "phase_sel"):
             self.comb += serdes.rx.phase_sel.eq(phase_sel)
         fsm.act("INC-PHASE-SEL",
+            self.master_debug_inc_phase_sel.eq(1),
             NextValue(phase_sel, phase_sel + 1),
             If(phase_sel == ({"1:1":1, "1:2":2, "1:4":4}[clk_ratio] - 1),
                 NextState("ERROR")
@@ -147,6 +166,7 @@ class _SerdesMasterInit(LiteXModule):
             )
         )
         fsm.act("CHECK-SAMPLING-WINDOW",
+            self.master_debug_check_sampling_window.eq(1),
             If((delay_max - delay_min) < taps//16,
                NextValue(delay_min_found, 0),
                NextValue(delay_max_found, 0),
@@ -159,6 +179,7 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.comma.eq(1)
         )
         fsm.act("CONFIGURE-SAMPLING-WINDOW",
+            self.master_debug_configure_sampling_window.eq(1),
             If(delay == (delay_min + (delay_max - delay_min)[1:]),
                 NextState("READY")
             ).Else(
@@ -168,9 +189,11 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.comma.eq(1)
         )
         fsm.act("READY",
+                self.master_debug_ready.eq(1),
             self.ready.eq(1)
         )
         fsm.act("ERROR",
+                self.master_debug_error.eq(1),
             self.error.eq(1)
         )
 
@@ -178,6 +201,7 @@ class _SerdesMasterInit(LiteXModule):
 
 @ResetInserter()
 class _SerdesSlaveInit(LiteXModule):
+    #TODO: add debug signals
     def __init__(self, serdes, taps, timeout, clk_ratio="1:1"):
         self.ready = Signal()
         self.error = Signal()
@@ -191,6 +215,17 @@ class _SerdesSlaveInit(LiteXModule):
         self.delay_max_found = delay_max_found = Signal()
         self.shift           = shift           = Signal(max=40)
         self.phase_sel       = phase_sel       = Signal(2)
+        self.slave_debug_reset    = Signal()
+        self.slave_debug_idle     = Signal()
+        self.slave_debug_send_pattern = Signal()
+        self.slave_debug_wait_stable = Signal()
+        self.slave_debug_check_pattern = Signal()
+        self.slave_debug_inc_delay_shift = Signal()
+        self.slave_debug_inc_phase_sel = Signal()
+        self.slave_debug_check_sampling_window = Signal()
+        self.slave_debug_configure_sampling_window = Signal()
+        self.slave_debug_ready = Signal()
+        self.slave_debug_error = Signal()
 
         # Timer.
         # ------
@@ -200,10 +235,12 @@ class _SerdesSlaveInit(LiteXModule):
         # ----
         self.fsm = fsm = FSM(reset_state="RESET")
         fsm.act("RESET",
+                self.slave_debug_reset.eq(1),
             NextValue(phase_sel, 0),
             NextState("IDLE")
         )
         fsm.act("IDLE",
+                self.slave_debug_idle.eq(1),
             NextValue(delay,           0),
             NextValue(delay_min,       0),
             NextValue(delay_min_found, 0),
@@ -219,6 +256,7 @@ class _SerdesSlaveInit(LiteXModule):
             serdes.tx.idle.eq(1)
         )
         fsm.act("WAIT-STABLE",
+                self.slave_debug_wait_stable.eq(1),
             timer.wait.eq(1),
             If(timer.done,
                 timer.wait.eq(0),
@@ -227,6 +265,7 @@ class _SerdesSlaveInit(LiteXModule):
             serdes.tx.idle.eq(1)
         )
         fsm.act("CHECK-PATTERN",
+                self.slave_debug_check_pattern.eq(1),
             If(~delay_min_found,
                 If(serdes.rx.comma,
                     timer.wait.eq(1),
@@ -250,6 +289,7 @@ class _SerdesSlaveInit(LiteXModule):
             serdes.tx.idle.eq(1)
         )
         fsm.act("INC-DELAY-SHIFT",
+                self.slave_debug_inc_delay_shift.eq(1),
             NextState("WAIT-STABLE"),
             If(delay == (taps - 1),
                 If(shift == (40 - 1),
@@ -273,6 +313,7 @@ class _SerdesSlaveInit(LiteXModule):
         if hasattr(serdes.rx, "phase_sel"):
             self.comb += serdes.rx.phase_sel.eq(phase_sel)
         fsm.act("INC-PHASE-SEL",
+                self.slave_debug_inc_phase_sel.eq(1),
             NextValue(phase_sel, phase_sel + 1),
             If(phase_sel == ({"1:1":1, "1:2":2, "1:4":4}[clk_ratio] - 1),
                 NextState("ERROR")
@@ -281,6 +322,7 @@ class _SerdesSlaveInit(LiteXModule):
             )
         )
         fsm.act("CHECK-SAMPLING-WINDOW",
+                self.slave_debug_check_sampling_window.eq(1),
             If((delay_max - delay_min) < taps//16,
                NextValue(delay_min_found, 0),
                NextValue(delay_max_found, 0),
@@ -293,6 +335,7 @@ class _SerdesSlaveInit(LiteXModule):
             serdes.tx.idle.eq(1)
         )
         fsm.act("CONFIGURE-SAMPLING-WINDOW",
+                self.slave_debug_configure_sampling_window.eq(1),
             If(delay == (delay_min + (delay_max - delay_min)[1:]),
                 NextState("SEND-PATTERN")
             ).Else(
@@ -302,6 +345,7 @@ class _SerdesSlaveInit(LiteXModule):
             serdes.tx.idle.eq(1)
         )
         fsm.act("SEND-PATTERN",
+                self.slave_debug_send_pattern.eq(1),
             timer.wait.eq(1),
             If(timer.done,
                 If(~serdes.rx.comma,
@@ -311,9 +355,11 @@ class _SerdesSlaveInit(LiteXModule):
             serdes.tx.comma.eq(1)
         )
         fsm.act("READY",
+                self.slave_debug_ready.eq(1),
             self.ready.eq(1)
         )
         fsm.act("ERROR",
+                self.slave_debug_error.eq(1),
             self.error.eq(1)
         )
 
@@ -454,18 +500,27 @@ class SERWBPHY(LiteXModule):
 
         # Dataflow.
         # ---------
+        self.first_invalid = Signal()
         self.comb += [
+            source.valid.eq(~self.serdes.rx.invalid & self.first_invalid & self.serdes.rx.datapath.decoder.source.valid),
             If(self.init.ready,
+                self.serdes.tx.invalid.eq(1),
                 If(sink.valid,
+                    self.serdes.tx.invalid.eq(0),
                     sink.connect(self.serdes.tx.sink),
                 ),
-                self.serdes.rx.source.connect(source)
+                self.serdes.rx.source.connect(source, omit={'valid'}),
             ).Else(
                 self.serdes.rx.source.ready.eq(1)
             ),
             self.serdes.tx.sink.valid.eq(1) # Always transmitting
         ]
 
+        self.sync += [
+            If(self.serdes.rx.invalid & ~self.first_invalid,
+               self.first_invalid.eq(1)
+            )
+        ]
         # PRBS.
         # -----
         # The PRBS test is using the scrambler/descrambler as PRBS, sending 0 to the scrambler and

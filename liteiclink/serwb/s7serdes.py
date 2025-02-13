@@ -72,6 +72,7 @@ class _S7SerdesTX(LiteXModule):
         # Control
         self.idle  = idle  = Signal()
         self.comma = comma = Signal()
+        self.invalid = invalid = Signal()
 
         # Datapath.
         self.sink = sink = stream.Endpoint([("data", dw)])
@@ -87,6 +88,7 @@ class _S7SerdesTX(LiteXModule):
             datapath.source.ready.eq(1),
             datapath.idle.eq(idle),
             datapath.comma.eq(comma),
+            datapath.invalid.eq(invalid),
         ]
 
         # Output Data (DDR with sys4x).
@@ -131,6 +133,7 @@ class _S7SerdesRX(LiteXModule):
         # Status.
         self.idle  =  idle = Signal()
         self.comma = comma = Signal()
+        self.invalid = invalid = Signal()
 
         # Datapath
         self.source = source = stream.Endpoint([("data", dw)])
@@ -201,6 +204,7 @@ class _S7SerdesRX(LiteXModule):
             datapath.source.connect(source),
             idle.eq(datapath.idle),
             comma.eq(datapath.comma),
+            invalid.eq(datapath.invalid),
         ]
 
 # S7 SerDes ----------------------------------------------------------------------------------------

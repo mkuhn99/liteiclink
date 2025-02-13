@@ -21,7 +21,7 @@ from liteiclink.serwb import scrambler
 from liteiclink.serwb.core import SERWBCoreAXILite
 from liteiclink.serwb.datapath import TXDatapath, RXDatapath
 from litex.soc.interconnect.axi import AXILiteSRAM
-
+CHANNELS_32BIT = ['aw', 'w', 'ctrl', 'r']
 # Fake Init/Serdes/PHY -----------------------------------------------------------------------------
 
 class FakeInit(LiteXModule):
@@ -101,18 +101,27 @@ class DUTScrambler(LiteXModule):
 
 class DUTCore(LiteXModule):
     def __init__(self, **kwargs):
+        phy_channels = {'aw':32, 'w':32, 'r':32, 'ctrl':32}
         # AXI slave
-        self.phy_slaves = phy_slaves = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
+        self.slave_aw_phy = FakePHY(32)
+        self.slave_w_phy = FakePHY(32)
+        self.slave_r_phy = FakePHY(32)
+        self.slave_ctrl_phy = FakePHY(32)
+        self.phy_slaves = phy_slaves = {'aw':self.slave_aw_phy, 'w':self.slave_w_phy, 'r':self.slave_r_phy, 'ctrl':self.slave_ctrl_phy}
         serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave")
         self.submodules += serwb_slave
 
 
         # AXI master
+        self.master_aw_phy = FakePHY(32)
+        self.master_w_phy = FakePHY(32)
+        self.master_r_phy = FakePHY(32)
+        self.master_ctrl_phy = FakePHY(32)
 
-        self.phy_masters = phy_masters = {k:FakePHY(dw=dw) for k, dw in {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}.items()}
+        self.phy_masters = phy_masters = {'w':self.master_w_phy, 'aw':self.master_aw_phy, 'r':self.master_r_phy, 'ctrl':self.master_ctrl_phy}
         serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master")
         self.submodules += serwb_master
-        for k in ['aw', 'w', 'ar', 'r', 'b']:
+        for k in CHANNELS_32BIT:
             self.submodules += phy_slaves[k], phy_masters[k]
             # Connect phy
             self.comb += [
@@ -132,8 +141,8 @@ class DUTCore(LiteXModule):
         self.submodules += sram
 
         # Expose AXI slave
-        self.axi = serwb_slave.bus
-
+        self.axi_slave = serwb_slave.bus
+        self.axi_master = serwb_master.bus
         self.rx = RXDatapath(8)
         self.tx = TXDatapath(8)
         self.comb += [
@@ -189,7 +198,7 @@ class TestSERWBCore(unittest.TestCase):
             while not (yield dut.rx.sink.data == 0x00):
                 yield
             yield
-            for k in ['aw', 'w', 'ar', 'r', 'b']:
+            for k in CHANNELS_32BIT:
                 yield dut.rx.sink.valid.eq(1)
                 yield dut.phy_masters[k].serdes.rx_dp.sink.valid.eq(1)
                 yield dut.phy_slaves[k].serdes.rx_dp.sink.valid.eq(1)
@@ -197,17 +206,17 @@ class TestSERWBCore(unittest.TestCase):
                 yield dut.phy_slaves[k].serdes.rx_dp.sink.ready.eq(1)
                 yield dut.phy_masters[k].serdes.tx_dp.source.ready.eq(1)
                 yield dut.phy_slaves[k].serdes.tx_dp.source.ready.eq(1)
-            for k in ['aw', 'w', 'ar', 'r', 'b']:
+            for k in CHANNELS_32BIT:
                 yield dut.phy_masters[k].serdes.tx_dp.invalid.eq(1)
                 yield dut.phy_slaves[k].serdes.tx_dp.invalid.eq(1)
             # Write
             for i in range(data_length):
                 print(i)
-                yield from dut.axi.write((data_base + i*4), datas_w[i])
+                yield from dut.axi_slave.write((data_base + i*4), datas_w[i])
 
             # Read
             for i in range(data_length):
-                datas_r.append((yield from dut.axi.read((data_base + i*4)))[0])
+                datas_r.append((yield from dut.axi_slave.read((data_base + i*4)))[0])
 
             # Check
             print(datas_w)

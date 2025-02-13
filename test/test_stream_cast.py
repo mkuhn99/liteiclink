@@ -73,6 +73,7 @@ class DUTCoreAXI(LiteXModule):
         self.ctrl_endpoint1 = stream.Endpoint(stream.EndpointDescription([('b_resp', 3), ('b_valid', 1), ('r_resp', 3), ('r_valid', 1), ('pad', 24)]))
 
         self.sync += [
+            #master
             self.aw_addr_endpoint.data.eq(self.axi_master.aw.addr),
             self.aw_addr_endpoint.valid.eq(self.axi_master.aw.valid),
 
@@ -82,10 +83,6 @@ class DUTCoreAXI(LiteXModule):
             self.w_data_endpoint.data.eq(self.axi_master.w.data),
             self.w_data_endpoint.valid.eq(self.axi_master.w.valid),
 
-
-            self.r_data_endpoint.data.eq(self.axi_slave.r.data),
-            self.r_data_endpoint.valid.eq(self.axi_slave.r.valid),
-
             self.ctrl_endpoint0.valid.eq(self.axi_master.ar.valid | self.axi_master.aw.valid | self.axi_master.w.valid),
             self.ctrl_endpoint0.ar_prot.eq(self.axi_master.ar.prot),
             self.ctrl_endpoint0.aw_prot.eq(self.axi_master.aw.prot),
@@ -93,6 +90,10 @@ class DUTCoreAXI(LiteXModule):
             self.ctrl_endpoint0.ar_valid.eq(self.axi_master.ar.valid),
             self.ctrl_endpoint0.aw_valid.eq(self.axi_master.aw.valid),
             self.ctrl_endpoint0.w_valid.eq(self.axi_master.w.valid),
+
+            # slave
+            self.r_data_endpoint.data.eq(self.axi_slave.r.data),
+            self.r_data_endpoint.valid.eq(self.axi_slave.r.valid),
 
             self.ctrl_endpoint1.valid.eq(self.axi_slave.b.valid | self.axi_slave.r.valid),
             self.ctrl_endpoint1.b_resp.eq(self.axi_slave.b.resp),
@@ -102,6 +103,15 @@ class DUTCoreAXI(LiteXModule):
         ]
 
         self.sync += [
+            # master
+            self.axi_master.r.data.eq(self.r_data_endpoint.data),
+            self.axi_master.r.resp.eq(self.ctrl_endpoint1.r_resp),
+            self.axi_master.r.valid.eq(self.r_data_endpoint.valid & self.ctrl_endpoint1.valid & self.ctrl_endpoint1.r_valid),
+
+            self.axi_master.b.resp.eq(self.ctrl_endpoint1.b_resp),
+            self.axi_master.b.valid.eq(self.ctrl_endpoint1.b_valid & self.ctrl_endpoint1.valid),
+
+            # slave
             self.axi_slave.aw.addr.eq(self.aw_addr_endpoint.data),
             self.axi_slave.aw.prot.eq(self.ctrl_endpoint0.aw_prot),
             self.axi_slave.aw.valid.eq(self.ctrl_endpoint0.aw_valid & self.aw_addr_endpoint.valid & self.ctrl_endpoint0.valid),
@@ -111,16 +121,11 @@ class DUTCoreAXI(LiteXModule):
             self.axi_slave.w.strb.eq(self.ctrl_endpoint0.w_strb),
             self.axi_slave.w.valid.eq(self.ctrl_endpoint0.w_valid & self.w_data_endpoint.valid & self.ctrl_endpoint0.valid),
 
-            self.axi_master.r.data.eq(self.r_data_endpoint.data),
-            self.axi_master.r.resp.eq(self.ctrl_endpoint1.r_resp),
-            self.axi_master.r.valid.eq(self.r_data_endpoint.valid & self.ctrl_endpoint1.valid & self.ctrl_endpoint1.r_valid),
 
             self.axi_slave.ar.addr.eq(self.ar_addr_endpoint.data),
             self.axi_slave.ar.prot.eq(self.ctrl_endpoint0.ar_prot),
             self.axi_slave.ar.valid.eq(self.ctrl_endpoint0.ar_valid & self.ar_addr_endpoint.valid & self.ctrl_endpoint0.valid),
 
-            self.axi_master.b.resp.eq(self.ctrl_endpoint1.b_resp),
-            self.axi_master.b.valid.eq(self.ctrl_endpoint1.b_valid & self.ctrl_endpoint1.valid),
         ]
 
         self.comb += [
@@ -206,6 +211,7 @@ class TestSERWBCore(unittest.TestCase):
             for data in [0x89abcdef, 0x0, 0x1, 0xffffffff, 0x2, 0x7892324]:
                 yield from dut.axi_master.write(0, data)
                 r = (yield from dut.axi_master.read(0))[0]
+                print(data, r)
                 if r != data:
                     dut.errors += 1
         dut = DUTCoreAXI()

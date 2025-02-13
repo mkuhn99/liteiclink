@@ -135,8 +135,7 @@ class _SerdesSlaveInitInitLowerTaps(_SerdesSlaveInit):
 
 class DUT(Module):
     def __init__(self):
-        CHANNEL_DICT = {'aw':64, 'w':64, 'ar':64, 'r':64, 'b':32}
-        CHANNEL_DICT = {'ar':32, 'r':32} # TODO channel breite != 32 geht nicht
+        CHANNEL_DICT = {'aw':32, 'r':32, 'w':32, 'ctrl':32}
         CLK = 8*10 #?
         to_e = 7
         self.master_pads = [Record([('clk_p',1), ('clk_n',1),
@@ -151,7 +150,12 @@ class DUT(Module):
                             Record([('rx_p', 1), ('rx_n', 1),
                                    ('tx_p', 1), ('tx_n', 1)]),]
         # note init_timeout master doesn't sync < 2**5 ?
-        self.master_phys = {k:SERWBPHY(device="xc7a", pads=self.master_pads[i], dw=dw, mode="slave", init_timeout=2**to_e) for i,(k, dw) in enumerate(CHANNEL_DICT.items())}
+        self.master_aw_phy = SERWBPHY(device="xc7a", pads=self.master_pads[0], dw=32, mode="slave", init_timeout=2**to_e)
+        self.master_w_phy = SERWBPHY(device="xc7a", pads=self.master_pads[1], dw=32, mode="slave", init_timeout=2**to_e)
+        self.master_r_phy = SERWBPHY(device="xc7a", pads=self.master_pads[2], dw=32, mode="slave", init_timeout=2**to_e)
+        self.master_ctrl_phy = SERWBPHY(device="xc7a", pads=self.master_pads[3], dw=32, mode="slave", init_timeout=2**to_e)
+
+        self.master_phys = phy_masters = {'w':self.master_w_phy, 'aw':self.master_aw_phy, 'r':self.master_r_phy, 'ctrl':self.master_ctrl_phy}
         self.master_core = SERWBCoreAXILite(self.master_phys, mode='master', clk_freq=CLK, buffer_depth=0)
         self.submodules += self.master_core
 
@@ -166,7 +170,12 @@ class DUT(Module):
                                    ('tx_p', 1), ('tx_n', 1)]),
                             Record([('rx_p', 1), ('rx_n', 1),
                                    ('tx_p', 1), ('tx_n', 1)]),]
-        self.slave_phys = {k:SERWBPHY(device="xc7a", pads=self.slave_pads[i], dw=dw, mode="master", init_timeout=2**to_e) for i,(k, dw) in enumerate(CHANNEL_DICT.items())}
+        
+        self.slave_aw_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[0], dw=32, mode="master", init_timeout=2**to_e)
+        self.slave_w_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[1], dw=32, mode="master", init_timeout=2**to_e)
+        self.slave_r_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[2], dw=32, mode="master", init_timeout=2**to_e)
+        self.slave_ctrl_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[3], dw=32, mode="master", init_timeout=2**to_e)
+        self.slave_phys = phy_slaves = {'aw':self.slave_aw_phy, 'w':self.slave_w_phy, 'r':self.slave_r_phy, 'ctrl':self.slave_ctrl_phy}
         self.slave_core = SERWBCoreAXILite(self.slave_phys, mode='slave', clk_freq=CLK, buffer_depth=0)
         self.submodules += self.slave_core
         delay = 2
@@ -223,36 +232,49 @@ class TestSERWBCore(unittest.TestCase):
             #datas_w     = [prng.randrange(2**32) for i in range(data_length)]
             #datas_r     = []
             debug = True
-            while not (yield dut.master_phys['ar'].init.ready) and not (yield dut.master_phys['ar'].init.error):
+            cycle = 0
+            while not (yield dut.master_phys['ctrl'].init.ready) and not (yield dut.master_phys['ctrl'].init.error):
                 yield
+                cycle += 1
+                if (cycle % 100) == 0:
+                    print(f'init cycle: {cycle}', end='\r')
+                if cycle == 4000:
+                    print("No Sync!")
             # while not (yield dut.master_phys['r'].init.ready) and not (yield dut.master_phys['r'].init.error):
             #     yield
             if debug:
-                print("s, delay_min_found:", (yield dut.slave_phys['ar'].init.delay_min_found))
-                print("s, delay_min:", (yield dut.slave_phys['ar'].init.delay_min))
-                print("s, delay_max_found:", (yield dut.slave_phys['ar'].init.delay_max_found))
-                print("s, delay_max:", (yield dut.slave_phys['ar'].init.delay_max))
-                print("s, delay:", (yield dut.slave_phys['ar'].init.delay))
-                print("s, shift:", (yield dut.slave_phys['ar'].init.shift))
-                print("s, error:", (yield dut.slave_phys['ar'].init.error))
-                print("s, ready:", (yield dut.slave_phys['ar'].init.ready))
-                print("m, delay_min_found:", (yield dut.master_phys['ar'].init.delay_min_found))
-                print("m, delay_min:", (yield dut.master_phys['ar'].init.delay_min))
-                print("m, delay_max_found:", (yield dut.master_phys['ar'].init.delay_max_found))
-                print("m, delay_max:", (yield dut.master_phys['ar'].init.delay_max))
-                print("m, delay:", (yield dut.master_phys['ar'].init.delay))
-                print("m, shift:", (yield dut.master_phys['ar'].init.shift))
-                print("m, error:", (yield dut.master_phys['ar'].init.error))
-                print("m, ready:", (yield dut.master_phys['ar'].init.ready))
+                print("s, delay_min_found:", (yield dut.slave_phys['ctrl'].init.delay_min_found))
+                print("s, delay_min:", (yield dut.slave_phys['ctrl'].init.delay_min))
+                print("s, delay_max_found:", (yield dut.slave_phys['ctrl'].init.delay_max_found))
+                print("s, delay_max:", (yield dut.slave_phys['ctrl'].init.delay_max))
+                print("s, delay:", (yield dut.slave_phys['ctrl'].init.delay))
+                print("s, shift:", (yield dut.slave_phys['ctrl'].init.shift))
+                print("s, error:", (yield dut.slave_phys['ctrl'].init.error))
+                print("s, ready:", (yield dut.slave_phys['ctrl'].init.ready))
+                print("m, delay_min_found:", (yield dut.master_phys['ctrl'].init.delay_min_found))
+                print("m, delay_min:", (yield dut.master_phys['ctrl'].init.delay_min))
+                print("m, delay_max_found:", (yield dut.master_phys['ctrl'].init.delay_max_found))
+                print("m, delay_max:", (yield dut.master_phys['ctrl'].init.delay_max))
+                print("m, delay:", (yield dut.master_phys['ctrl'].init.delay))
+                print("m, shift:", (yield dut.master_phys['ctrl'].init.shift))
+                print("m, error:", (yield dut.master_phys['ctrl'].init.error))
+                print("m, ready:", (yield dut.master_phys['ctrl'].init.ready))
             # Write
             #for i in range(data_length):
-            addr = 0x40000000
+            addr = 0x4
             data = 0x89abcdef
-            yield from dut.slave_axi.read(addr)
+            r = (yield from dut.slave_axi.read(addr))
+            if r != 0x5aa55aa5:
+                dut.errors += 1
+            yield from dut.slave_axi.write(addr, data)
             while not (yield dut.slave_axi.r.valid):
                 yield
             for i in range(20):
                 yield
+            
+            r = (yield from dut.slave_axi.read(addr))
+            if r != data:
+                dut.errors += 1
             # Read
             #for i in range(data_length):
             #    datas_r.append((yield from dut.wishbone.read(data_base + i)))
@@ -279,5 +301,5 @@ class TestSERWBCore(unittest.TestCase):
                     serdes_rate = 8
                     run_simulation(dut, generator(dut), special_overrides={DifferentialOutput: FakeDifferentialOutput,
                                                                            DifferentialInput: FakeDifferentialInput},
-                                    clocks={'sys': (base_clk*serdes_rate, 40), 'sys4x': (base_clk, 5)}, vcd_name='test3.vcd') #clocks={'sys': 8, 'sys4x':1},  , vcd_name = 't.vcd'
+                                    clocks={'sys': (base_clk*serdes_rate, 40), 'sys4x': (base_clk, 5)}, vcd_name='test_serwb_phy.vcd') #clocks={'sys': 8, 'sys4x':1},  , vcd_name = 't.vcd'
                     self.assertEqual(dut.errors, 0)

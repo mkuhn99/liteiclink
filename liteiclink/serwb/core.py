@@ -13,8 +13,8 @@ from litex.soc.interconnect        import stream
 from litex.soc.interconnect.axi    import AXILiteInterface, ax_lite_description, w_lite_description, b_lite_description, r_lite_description
 from litex.soc.interconnect.packet import Arbiter, Dispatcher
 
-from liteiclink.serwb.packet    import packet_description, packet_description_
-from liteiclink.serwb.packet    import Packetizer, Depacketizer, AxiDepacketizer, AxiPacketizer
+from liteiclink.serwb.packet    import packet_description, packet_description_, phy_description
+from liteiclink.serwb.packet    import Packetizer, Depacketizer
 from liteiclink.serwb.etherbone import Etherbone
 
 # SERWB Core ---------------------------------------------------------------------------------------
@@ -111,91 +111,181 @@ class SERWBCore(LiteXModule):
 
 # SERWB Core ---------------------------------------------------------------------------------------
 
+# PHYs:
+#                  Master   <------------>   Slave
+# aw: 
+#                            aw_addr 32 ->
+# w:
+#                             w_data 32 ->
+# ctrl: 
+#                             ar_prot 3 ->
+#                             aw_prot 3 ->
+#                              w_strb 4 ->
+#                           <- 2 b_resp
+#                           <- 2 r_resp
+# r:  
+#                            ar_addr 32 ->
+#                           <- 32 r_data
+
 class SERWBCoreAXILite(LiteXModule):
     def __init__(self, phys, clk_freq, mode, with_rst_on_link_down=True,
         buffer_depth        = 8,
     ):
         assert mode in ['master', 'slave'], "mode has to be master or slave"
+        assert len(phys) == 4, "need for phys"
         # Bus.
         # ----
         # TODO: Master/Slave distinction            
         self.bus = AXILiteInterface()
-
+        self.aw_addr_endpoint = stream.Endpoint(stream.EndpointDescription([('data', 32)]))
+        self.ar_addr_endpoint = stream.Endpoint(stream.EndpointDescription([('data', 32)]))
+        self.w_data_endpoint = stream.Endpoint(stream.EndpointDescription([('data', 32)]))
+        self.r_data_endpoint = stream.Endpoint(stream.EndpointDescription([('data', 32)]))
+        self.ctrl_endpoint0 = stream.Endpoint(stream.EndpointDescription([('ar_prot', 3), ('ar_valid', 1), ('aw_prot', 3), ('aw_valid', 1), ('w_strb', 4), ('w_valid', 1), ('pad', 19)]))
+        self.ctrl_endpoint1 = stream.Endpoint(stream.EndpointDescription([('b_resp', 3), ('b_valid', 1), ('r_resp', 3), ('r_valid', 1), ('pad', 24)]))
+        
         # Buffering.
         # ----------
-        self.aw_fifo           = aw_fifo    = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
-        self.w_fifo            = w_fifo     = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
-        self.ar_fifo           = ar_fifo    = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
-        self.b_fifo            = b_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
-        self.r_fifo            = r_fifo     = ResetInserter()(stream.SyncFIFO([('data', 40)], buffer_depth, buffered=True))
+        self.aw_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
+        self.ar_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
+        self.w_fifo      = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
+        self.ctrl0_fifo  = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
+        self.ctrl1_fifo  = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
+        self.r_fifo      = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
 
         # Packetizer / Depacketizer.
         # --------------------------
 
         #TODO: make smart loop
         if mode=="slave":
-            self.aw_packetizer      = aw_packetizer     = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(ax_lite_description(32))))
-            self.w_packetizer       = w_packetizer      = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(w_lite_description(32))))
-            self.ar_packetizer      = ar_packetizer     = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(ax_lite_description(32))))
-            self.b_depacketizer     = b_depacketizer    = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(b_lite_description())))
-            self.r_depacketizer     = r_depacketizer    = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(r_lite_description(32))))
+            self.ctrl0_cast = stream.Cast(self.ctrl_endpoint0.description, [('data', 32)])
+            self.ctrl1_cast = stream.Cast([('data', 32)], self.ctrl_endpoint1.description)
             self.comb += [
-                # AXIInterfaceLite <---> Core.
-                self.bus.aw.connect(aw_packetizer.sink),
-                self.bus.ar.connect(ar_packetizer.sink),
-                self.bus.w.connect(w_packetizer.sink),
-                b_depacketizer.source.connect(self.bus.b, omit={'length', 'port'}),
-                r_depacketizer.source.connect(self.bus.r, omit={'length', 'port'}),
-                # Core -> PHY.
-                aw_packetizer.source.connect(aw_fifo.sink),
-                w_packetizer.source.connect(w_fifo.sink),
-                ar_packetizer.source.connect(ar_fifo.sink),
-                # packetizer.source.connect(tx_fifo.sink),
-                # tx_fifo.source.connect(phy.sink),
-                aw_fifo.source.connect(phys['aw'].sink),
-                w_fifo.source.connect(phys['w'].sink),
-                ar_fifo.source.connect(phys['ar'].sink),
+                # Master -> Slave Signals
+                self.aw_addr_endpoint.ready.eq(phys['aw'].sink.ready),
+                self.w_data_endpoint.ready.eq(phys['w'].sink.ready),
+                self.ar_addr_endpoint.ready.eq(phys['r'].sink.ready),
+                self.r_data_endpoint.ready.eq(phys['r'].source.ready),
+                self.ctrl_endpoint0.ready.eq(phys['ctrl'].sink.ready),
+                self.ctrl_endpoint1.ready.eq(phys['ctrl'].source.ready),
 
-                # PHY -> Core.
-                # phy.source.connect(rx_fifo.sink),
-                # rx_fifo.source.connect(depacketizer.sink),
-                b_fifo.source.connect(b_depacketizer.sink, omit={'length', 'port'}),
-                r_fifo.source.connect(r_depacketizer.sink, omit={'length', 'port'}),
-                phys['b'].source.connect(b_fifo.sink),
-                phys['r'].source.connect(r_fifo.sink),
+                self.bus.aw.ready.eq(self.aw_addr_endpoint.ready & self.ctrl_endpoint0.ready),
+                self.bus.ar.ready.eq(self.ar_addr_endpoint.ready & self.ctrl_endpoint0.ready),
+                self.bus.w.ready.eq(self.w_data_endpoint.ready & self.ctrl_endpoint0.ready),
+                self.bus.b.ready.eq(self.ctrl_endpoint1.ready),
+                self.bus.r.ready.eq(self.r_data_endpoint.ready & self.ctrl_endpoint0.ready),
+                # Bus-Channels -> 32bit-Channels
+                self.aw_addr_endpoint.data.eq(self.bus.aw.addr),
+                self.aw_addr_endpoint.valid.eq(self.bus.aw.valid),
+
+                self.ar_addr_endpoint.data.eq(self.bus.ar.addr),
+                self.ar_addr_endpoint.valid.eq(self.bus.ar.valid),
+
+                self.w_data_endpoint.data.eq(self.bus.w.data),
+                self.w_data_endpoint.valid.eq(self.bus.w.valid),
+
+                self.ctrl_endpoint0.valid.eq(self.bus.ar.valid | self.bus.aw.valid | self.bus.w.valid),
+                self.ctrl_endpoint0.ar_prot.eq(self.bus.ar.prot),
+                self.ctrl_endpoint0.aw_prot.eq(self.bus.aw.prot),
+                self.ctrl_endpoint0.w_strb.eq(self.bus.w.strb),
+                self.ctrl_endpoint0.ar_valid.eq(self.bus.ar.valid),
+                self.ctrl_endpoint0.aw_valid.eq(self.bus.aw.valid),
+                self.ctrl_endpoint0.w_valid.eq(self.bus.w.valid),
+
+                # 32bit-Channels -> FIFO
+                self.aw_addr_endpoint.connect(self.aw_fifo.sink),
+                self.ar_addr_endpoint.connect(self.ar_fifo.sink),
+                self.ctrl_endpoint0.connect(self.ctrl0_cast.sink),
+                self.ctrl0_cast.source.connect(self.ctrl0_fifo.sink),
+                self.w_data_endpoint.connect(self.w_fifo.sink),
+
+                # FIFO -> PHY
+                self.aw_fifo.source.connect(phys['aw'].sink),
+                self.ar_fifo.source.connect(phys['r'].sink),
+                self.ctrl0_fifo.source.connect(phys['ctrl'].sink),
+                self.w_fifo.source.connect(phys['w'].sink),
+
+                # Master <- Slave
+                # PHY -> FIFO
+                phys['r'].source.connect(self.r_fifo.sink),
+                phys['ctrl'].source.connect(self.ctrl1_fifo.sink),
+
+                # FIFO -> 32bit-Channels
+                self.r_fifo.source.connect(self.r_data_endpoint),
+                self.ctrl1_fifo.source.connect(self.ctrl1_cast.sink),
+                self.ctrl1_cast.source.connect(self.ctrl_endpoint1),
+
+                # 32bit-Channels -> FIFO
+                self.bus.r.data.eq(self.r_data_endpoint.data),
+                self.bus.r.resp.eq(self.ctrl_endpoint1.r_resp),
+                self.bus.r.valid.eq(self.r_data_endpoint.valid & self.ctrl_endpoint1.valid & self.ctrl_endpoint1.r_valid),
+
+                self.bus.b.resp.eq(self.ctrl_endpoint1.b_resp),
+                self.bus.b.valid.eq(self.ctrl_endpoint1.b_valid & self.ctrl_endpoint1.valid),
             ]
 
         else:
-            self.aw_depacketizer    = aw_depacketizer       = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(ax_lite_description(32))))
-            self.w_depacketizer     = w_depacketizer        = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(w_lite_description(32))))
-            self.ar_depacketizer    = ar_depacketizer       = ResetInserter()(AxiDepacketizer(clk_freq, packet_descr=packet_description_(ax_lite_description(32))))
-            self.b_packetizer       = b_packetizer          = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(b_lite_description())))
-            self.r_packetizer       = r_packetizer          = ResetInserter()(AxiPacketizer(packet_descr=packet_description_(r_lite_description(32))))
+            self.ctrl1_cast = stream.Cast(self.ctrl_endpoint1.description, [('data', 32)])
+            self.ctrl0_cast = stream.Cast([('data', 32)], self.ctrl_endpoint0.description)
             self.comb += [
-                # AXIInterfaceLite <---> Core
-                self.bus.b.connect(b_packetizer.sink),
-                self.bus.r.connect(r_packetizer.sink),
-                w_depacketizer.source.connect(self.bus.w, omit={'length', 'port'}),
-                aw_depacketizer.source.connect(self.bus.aw, omit={'length', 'port'}),
-                #self.bus.aw.connect(aw_depacketizer.source, omit={'length', 'port'}),
-                ar_depacketizer.source.connect(self.bus.ar, omit={'length', 'port'}),
-                # Core -> PHY.
-                b_packetizer.source.connect(b_fifo.sink),
-                r_packetizer.source.connect(r_fifo.sink),
-                # packetizer.source.connect(tx_fifo.sink),
-                # tx_fifo.source.connect(phy.sink),
-                b_fifo.source.connect(phys['b'].sink),
-                r_fifo.source.connect(phys['r'].sink),
+                # Slave -> Master Signals TODO: sink.ready -> phy init ready?
+                self.aw_addr_endpoint.ready.eq(phys['aw'].source.ready),
+                self.w_data_endpoint.ready.eq(phys['w'].source.ready),
+                self.ar_addr_endpoint.ready.eq(phys['r'].source.ready),
+                self.r_data_endpoint.ready.eq(phys['r'].sink.ready),
+                self.ctrl_endpoint0.ready.eq(phys['ctrl'].source.ready),
+                self.ctrl_endpoint1.ready.eq(phys['ctrl'].sink.ready),
 
-                # PHY -> Core.
-                # phy.source.connect(rx_fifo.sink),
-                # rx_fifo.source.connect(depacketizer.sink),
-                aw_fifo.source.connect(aw_depacketizer.sink, omit={'length', 'port'}),
-                ar_fifo.source.connect(ar_depacketizer.sink, omit={'length', 'port'}),
-                w_fifo.source.connect(w_depacketizer.sink, omit={'length', 'port'}),
-                phys['aw'].source.connect(aw_fifo.sink),
-                phys['w'].source.connect(w_fifo.sink),
-                phys['ar'].source.connect(ar_fifo.sink),
+                self.bus.aw.ready.eq(self.aw_addr_endpoint.ready & self.ctrl_endpoint0.ready),
+                self.bus.ar.ready.eq(self.ar_addr_endpoint.ready & self.ctrl_endpoint0.ready),
+                self.bus.w.ready.eq(self.w_data_endpoint.ready & self.ctrl_endpoint0.ready),
+                self.bus.b.ready.eq(self.ctrl_endpoint1.ready),
+                self.bus.r.ready.eq(self.r_data_endpoint.ready & self.ctrl_endpoint0.ready),
+                # bus -> 32bit-Channels
+                self.r_data_endpoint.data.eq(self.bus.r.data),
+                self.r_data_endpoint.valid.eq(self.bus.r.valid),
+
+                self.ctrl_endpoint1.valid.eq(self.bus.b.valid | self.bus.r.valid),
+                self.ctrl_endpoint1.b_resp.eq(self.bus.b.resp),
+                self.ctrl_endpoint1.b_valid.eq(self.bus.b.valid),
+                self.ctrl_endpoint1.r_resp.eq(self.bus.r.resp),
+                self.ctrl_endpoint1.r_valid.eq(self.bus.r.valid),
+
+                # 32bit-Channels -> FIFO
+                self.r_data_endpoint.connect(self.r_fifo.sink),
+                self.ctrl_endpoint1.connect(self.ctrl1_cast.sink),
+                self.ctrl1_cast.source.connect(self.ctrl1_fifo.sink),
+
+                # FIFO -> PHY
+                self.r_fifo.source.connect(phys['r'].sink),
+                self.ctrl1_fifo.source.connect(phys['ctrl'].sink),
+
+                # Slave <- Master Signals
+                # PHY -> FIFO
+                phys['aw'].source.connect(self.aw_fifo.sink),
+                phys['r'].source.connect(self.ar_fifo.sink),
+                phys['w'].source.connect(self.w_fifo.sink),
+                phys['ctrl'].source.connect(self.ctrl0_fifo.sink),
+
+                # FIFO -> 32bit-Channels
+                self.aw_fifo.source.connect(self.aw_addr_endpoint),
+                self.ctrl0_fifo.source.connect(self.ctrl0_cast.sink),
+                self.ctrl0_cast.source.connect(self.ctrl_endpoint0),
+                self.ar_fifo.source.connect(self.ar_addr_endpoint),
+                self.w_fifo.source.connect(self.w_data_endpoint),
+
+                # 32bit-Channels -> bus
+                self.bus.aw.addr.eq(self.aw_addr_endpoint.data), 
+                self.bus.aw.prot.eq(self.ctrl_endpoint0.aw_prot),
+                self.bus.aw.valid.eq(self.ctrl_endpoint0.aw_valid & self.aw_addr_endpoint.valid & self.ctrl_endpoint0.valid),
+
+                self.bus.w.data.eq(self.w_data_endpoint.data),
+                self.bus.w.strb.eq(self.ctrl_endpoint0.w_strb),
+                self.bus.w.valid.eq(self.ctrl_endpoint0.w_valid & self.w_data_endpoint.valid & self.ctrl_endpoint0.valid),
+
+                self.bus.ar.addr.eq(self.ar_addr_endpoint.data),
+                self.bus.ar.prot.eq(self.ctrl_endpoint0.ar_prot),
+                self.bus.ar.valid.eq(self.ctrl_endpoint0.ar_valid & self.ar_addr_endpoint.valid & self.ctrl_endpoint0.valid),
             ]
 
         # Reset internal module when link down.
@@ -209,30 +299,6 @@ class SERWBCoreAXILite(LiteXModule):
         #         rx_fifo.reset.eq(      ~phy.init.ready),
         #     ]
 
-    # def do_finalize(self):
-        # Downstream Arbitration.
-        # -----------------------
-        # downstream_endpoints = [stream.Endpoint(packet_description(32)) for _ in range(len(self.downstream_endpoints))]
-        # for i, (k, v) in enumerate(self.downstream_endpoints.items()):
-        #     self.comb += [
-        #         v.connect(downstream_endpoints[i], keep={"valid", "ready", "last", "data", "length"}),
-        #         downstream_endpoints[i].port.eq(k),
-        #     ]
-        # self.arbiter = Arbiter(
-        #     masters = downstream_endpoints,
-        #     slave   = self.packetizer.sink,
-        # )
-
-        # # Upstream Dispatching.
-        # # ---------------------
-        # self.dispatcher = Dispatcher(
-        #     master  = self.depacketizer.source,
-        #     slaves  = [ep for _, ep in self.upstream_endpoints.items()],
-        #     one_hot = False,
-        #     keep    = {"valid", "ready", "last", "data", "length"},
-        # )
-        # for i, (k, v) in enumerate(self.upstream_endpoints.items()):
-        #     self.comb += If(self.depacketizer.source.port == k, self.dispatcher.sel.eq(i))
 
 
 # SERIO Core ---------------------------------------------------------------------------------------
