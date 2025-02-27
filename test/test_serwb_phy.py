@@ -181,6 +181,10 @@ class DUT(Module):
         delay = 2
         for i,k in enumerate(CHANNEL_DICT.keys()):
             self.submodules += self.master_phys[k], self.slave_phys[k]
+            self.comb += [
+                self.master_phys[k].serdes.rx.source.ready.eq(1),
+                self.slave_phys[k].serdes.rx.source.ready.eq(1),
+            ]
             self.delayed_m = Signal(delay - 1)
             self.delayed_s = Signal(delay - 1)
             # self.sync.sys4x += [

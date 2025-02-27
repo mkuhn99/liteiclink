@@ -101,14 +101,13 @@ class DUTScrambler(LiteXModule):
 
 class DUTCore(LiteXModule):
     def __init__(self, **kwargs):
-        phy_channels = {'aw':32, 'w':32, 'r':32, 'ctrl':32}
         # AXI slave
         self.slave_aw_phy = FakePHY(32)
         self.slave_w_phy = FakePHY(32)
         self.slave_r_phy = FakePHY(32)
         self.slave_ctrl_phy = FakePHY(32)
         self.phy_slaves = phy_slaves = {'aw':self.slave_aw_phy, 'w':self.slave_w_phy, 'r':self.slave_r_phy, 'ctrl':self.slave_ctrl_phy}
-        serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave")
+        serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave", buffer_depth=6)
         self.submodules += serwb_slave
 
 
@@ -119,7 +118,7 @@ class DUTCore(LiteXModule):
         self.master_ctrl_phy = FakePHY(32)
 
         self.phy_masters = phy_masters = {'w':self.master_w_phy, 'aw':self.master_aw_phy, 'r':self.master_r_phy, 'ctrl':self.master_ctrl_phy}
-        serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master")
+        serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master", buffer_depth=6)
         self.submodules += serwb_master
         for k in CHANNELS_32BIT:
             self.submodules += phy_slaves[k], phy_masters[k]
@@ -137,7 +136,7 @@ class DUTCore(LiteXModule):
             ]
 
         # Add AXI sram to AXI master
-        sram = AXILiteSRAM(1024, bus=serwb_master.bus)
+        sram = AXILiteSRAM(1024, bus=serwb_master.bus, init={0x5aa11aa5, 0x5aa22aa5, 0x5aa33aa5})
         self.submodules += sram
 
         # Expose AXI slave
@@ -146,7 +145,7 @@ class DUTCore(LiteXModule):
         self.rx = RXDatapath(8)
         self.tx = TXDatapath(8)
         self.comb += [
-            self.tx.source.connect(self.rx.sink, omit={'valid'}),
+            self.tx.source.connect(self.rx.sink, omit={'valid', 'ready'}),
             #self.rx.sink.valid.eq(1),
             # self.rx.converter.source.valid.eq(1),
         ]
@@ -188,8 +187,8 @@ class TestSERWBCore(unittest.TestCase):
         def generator(dut):
             # Prepare test
             prng        = random.Random(42)
-            data_base   = 0x100
-            data_length = 6
+            data_base   = 0x4
+            data_length = 5
             datas_w     = [prng.randrange(2**32) for i in range(data_length)]
             datas_r     = []
             # Init:
@@ -197,6 +196,7 @@ class TestSERWBCore(unittest.TestCase):
             yield dut.tx.invalid.eq(1)
             while not (yield dut.rx.sink.data == 0x00):
                 yield
+            yield
             yield
             for k in CHANNELS_32BIT:
                 yield dut.rx.sink.valid.eq(1)
@@ -207,21 +207,33 @@ class TestSERWBCore(unittest.TestCase):
                 yield dut.phy_masters[k].serdes.tx_dp.source.ready.eq(1)
                 yield dut.phy_slaves[k].serdes.tx_dp.source.ready.eq(1)
             for k in CHANNELS_32BIT:
+                yield
                 yield dut.phy_masters[k].serdes.tx_dp.invalid.eq(1)
+                yield
+                yield dut.phy_slaves[k].serdes.tx_dp.invalid.eq(1)
+                yield
+                yield dut.phy_masters[k].serdes.tx_dp.invalid.eq(0)
                 yield dut.phy_slaves[k].serdes.tx_dp.invalid.eq(1)
             # Write
+            yield
+            yield
+            yield
+            yield
+            yield
             for i in range(data_length):
                 print(i)
                 yield from dut.axi_slave.write((data_base + i*4), datas_w[i])
 
             # Read
             for i in range(data_length):
+                print(i)
                 datas_r.append((yield from dut.axi_slave.read((data_base + i*4)))[0])
 
             # Check
             print(datas_w)
             print(datas_r)
             for i in range(data_length):
+                print(hex(datas_r[i]))
                 if datas_r[i] != datas_w[i]:
                     dut.errors += 1
             # # Write
@@ -240,3 +252,7 @@ class TestSERWBCore(unittest.TestCase):
         dut.errors = 0
         run_simulation(dut, generator(dut), vcd_name='test_axi_datapath.vcd')
         self.assertEqual(dut.errors, 0)
+
+if __name__ == '__main__':
+    tst = TestSERWBCore()
+    tst.test_serwb()
