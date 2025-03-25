@@ -89,14 +89,14 @@ class DUTScrambler(LiteXModule):
 class DUTCore(LiteXModule):
     def __init__(self, **kwargs):
         # AXI slave
-        phy_slaves = {k:FakePHY(dw=dw) for k, dw in {'aw':40, 'w':40, 'ar':40, 'r':40, 'b':32}.items()}
+        phy_slaves = {k:FakePHY(dw=32) for k in ['aw', 'ar', 'w', 'b', 'r']}
         serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave")
         self.submodules += serwb_slave
 
 
         # AXI master
 
-        phy_masters = {k:FakePHY(dw=dw) for k, dw in {'aw':40, 'w':40, 'ar':40, 'r':40, 'b':32}.items()}
+        phy_masters = {k:FakePHY(dw=32) for k in ['aw', 'ar', 'w', 'b', 'r']}
         serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master")
         self.submodules += serwb_master
         for k in ['aw', 'w', 'ar', 'r', 'b']:
@@ -168,7 +168,19 @@ class TestSERWBCore(unittest.TestCase):
             # Read
             for i in range(data_length):
                 datas_r.append((yield from dut.axi.read((data_base + i*4)))[0])
+            # Check
+            print(datas_w)
+            print(datas_r)
+            for i in range(data_length):
+                if datas_r[i] != datas_w[i]:
+                    dut.errors += 1
 
+            datas_w     = [prng.randrange(2**32) for i in range(data_length)]
+            datas_r     = []
+            # Alternate Read Write
+            for i in range(data_length):
+                yield from dut.axi.write((data_base + i*4), datas_w[i])
+                datas_r.append((yield from dut.axi.read((data_base + i*4)))[0])
             # Check
             print(datas_w)
             print(datas_r)

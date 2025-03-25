@@ -135,56 +135,52 @@ class Depacketizer(LiteXModule):
         )
 
 # Packetizer ---------------------------------------------------------------------------------------
+# TODO: 
+# write payload in 32bit packets in loop
+#   -> flatten/cast payload
+#   -> iterate over payload with converter ?
+# e.g.: for p32bit in p: 
+#           ... fsm.act(...)
 class AxiPacketizer(LiteXModule):
-    def __init__(self, packet_descr=packet_description(32)):
-        self.sink   = sink   = stream.Endpoint(packet_descr)
-        dw = sum([c[1] for c in sink.description.payload_layout])
-        dw = dw if dw > 32 else 32
-        dw = dw if (dw % 8) == 0 else (dw//8 + 1)*8
-        self.comb += [sink.length.eq(1)]
-        self.source = source = stream.Endpoint(phy_description(dw))
-
-        # # #
-
-        # Packet description
-        # - Preamble : 4 bytes.
-        # - Port     : 1 byte.
-        # - Length   : 2 bytes.
-        # - Payload  : length dw bits words.
+    def __init__(self, axi_endpoint):
+        dw = sum([c[1] for c in axi_endpoint.description.payload_layout])
+        padded_dw = -(-dw//32)*32
+        pad_w = padded_dw - dw
+        length = padded_dw//32
+        if pad_w != 0:
+            self.padded_endpoint = padded_endpoint = stream.Endpoint(axi_endpoint.description.payload_layout + [('pad', pad_w)])
+        else:
+            self.padded_endpoint = padded_endpoint = stream.Endpoint(axi_endpoint.description.payload_layout)
+        self.source = source = stream.Endpoint(phy_description(32))
+        self.sink   = sink   = stream.Endpoint([('data', padded_dw)])
+        self.cast = cast = stream.Cast(self.padded_endpoint.description, sink.description)
+        self.converter = converter = stream.Converter(padded_dw, 32, report_valid_token_count=True)
+        self.comb += [
+            axi_endpoint.connect(padded_endpoint, omit={'pad'}),
+            padded_endpoint.connect(cast.sink),
+            cast.source.connect(sink),
+            sink.connect(converter.sink),
+            ]
 
         # FSM.
         # ----
-        i = 0
-        data_write = ()
-        for c in sink.description.payload_layout:
-            c_sig = getattr(sink, c[0])
-            c_width = c[1]
-            data_write += (source.data[i:i+c_width].eq(c_sig),)
-            i += c_width
         self.fsm = fsm = FSM(reset_state="PREAMBLE")
         fsm.act("PREAMBLE",
+            sink.ready.eq(0),
             If(sink.valid,
                 source.valid.eq(1),
                 source.data.eq(0x5aa55aa5),
                 If(source.ready,
-                    NextState("PORT-LENGTH")
+                    NextState("DATA")
                 )
-            )
-        )
-        fsm.act("PORT-LENGTH",
-            source.valid.eq(1),
-            source.data[0 :8].eq(sink.port),
-            source.data[8:24].eq(sink.length),
-            If(source.ready,
-                NextState("DATA")
             )
         )
         fsm.act("DATA",
             source.valid.eq(sink.valid),
-            # source.data.eq(sink.data),
-            data_write,
-            sink.ready.eq(source.ready),
-            If(source.ready & ~sink.valid,
+            source.data.eq(converter.source.data),
+            sink.ready.eq(converter.source.valid_token_count),
+            converter.source.ready.eq(1),
+            If(converter.source.valid_token_count,
                 NextState("PREAMBLE")
             )
         )
@@ -192,73 +188,57 @@ class AxiPacketizer(LiteXModule):
 # Depacketizer -------------------------------------------------------------------------------------
 
 class AxiDepacketizer(LiteXModule):
-    def __init__(self, clk_freq, timeout=10, packet_descr=packet_description(32)):
-        self.source   = source   = stream.Endpoint(packet_descr)
-        dw = sum([c[1] for c in source.description.payload_layout])
-        dw = dw if dw > 32 else 32
-        dw = dw if (dw % 8) == 0 else (dw//8 + 1)*8
-        self.sink = sink = stream.Endpoint(phy_description(dw))
+    def __init__(self, clk_freq, axi_endpoint, timeout=10):
+        dw = sum([c[1] for c in axi_endpoint.description.payload_layout])
+        padded_dw = -(-dw//32)*32
+        pad_w = padded_dw - dw
+        if pad_w != 0:
+            self.padded_endpoint = stream.Endpoint(axi_endpoint.description.payload_layout + [('pad', pad_w)])
+        else:
+            self.padded_endpoint = stream.Endpoint(axi_endpoint.description.payload_layout)
+        length = padded_dw//32
+        self.source   = source   = stream.Endpoint(phy_description(padded_dw))
+        self.cast = stream.Cast(source.description, self.padded_endpoint.description)
+        self.sink = sink = stream.Endpoint(phy_description(32))
+        self.converter = converter = stream.Converter(32, padded_dw, report_valid_token_count=True)
+        self.comb += [
+            self.converter.source.connect(self.source, omit={'valid_token_count'}),
+            self.source.connect(self.cast.sink),
+            self.cast.source.connect(self.padded_endpoint),
+            self.padded_endpoint.connect(axi_endpoint, omit={'pad'}),
+        ]
 
         # # #
-
-        # Packet description
-        # - Preamble : 4 bytes.
-        # - Port     : 1 byte.
-        # - Length   : 2 bytes.
-        # - Payload
-
-        # Signals.
-        # --------
-        port   = Signal(len(source.port))
-        count  = Signal(len(source.length))
-        length = Signal(len(source.length))
 
         # Timer.
         # ------
         self.timer = timer = WaitTimer(clk_freq*timeout)
-
         # FSM.
         # ----
-        i = 0
-        data_write = ()
-        for c in source.description.payload_layout:
-            c_sig = getattr(source, c[0])
-            c_width = c[1]
-            data_write += (c_sig.eq(sink.data[i:i+c_width]),)
-            i += c_width
-
         self.fsm = fsm = FSM(reset_state="PREAMBLE")
         fsm.act("PREAMBLE",
             sink.ready.eq(1),
             If(sink.valid &
               (sink.data == 0x5aa55aa5),
-                NextState("PORT-LENGTH")
-            )
-        )
-        fsm.act("PORT-LENGTH",
-            sink.ready.eq(1),
-            If(sink.valid,
-                NextValue(count, 0),
-                NextValue(port,   sink.data[0:8]),
-                NextValue(length, sink.data[8:24]),
-                NextState("DATA")
+                NextState("DATA"),
+                NextValue(converter.valid_token_count, 0),
             ),
-            timer.wait.eq(1)
         )
         fsm.act("DATA",
-            source.valid.eq(sink.valid),
-            source.last.eq(count == (length - 1)),
-            source.port.eq(port),
-            source.length.eq(length),
-            data_write,
-            sink.ready.eq(source.ready),
-            If(timer.done,
-                NextState("PREAMBLE")
-            ).Elif(source.valid & source.ready,
-                NextValue(count, count + 1),
-                If(source.last,
-                    NextState("PREAMBLE")
+            sink.ready.eq(1),
+            If(sink.valid,
+                converter.sink.valid.eq(1),
+                converter.sink.data.eq(sink.data),
+                source.ready.eq(converter.valid_token_count == length),
+                If(length == 1,
+                    NextState("PREAMBLE"),
                 )
             ),
+            If(timer.done,
+                NextState("PREAMBLE"),
+            ),
+            If((converter.valid_token_count == length) & (converter.valid_token_count != 1),
+                    NextState("PREAMBLE"),
+                ),
             timer.wait.eq(1)
         )
