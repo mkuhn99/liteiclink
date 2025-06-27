@@ -40,7 +40,6 @@ class TXDatapath(LiteXModule):
 
         # Converter.
         # ----------
-        print(phy_dw, packet_dw, nwords)
         self.converter = converter = stream.Converter(10*nwords, phy_dw)
 
         # Data-Path.

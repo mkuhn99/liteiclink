@@ -112,14 +112,15 @@ class SERWBCore(LiteXModule):
 # SERWB Core ---------------------------------------------------------------------------------------
 
 class SERWBCoreAXILite(LiteXModule):
-    def __init__(self, phys, clk_freq, mode, with_rst_on_link_down=True,
+    def __init__(self, phys, clk_freq, mode, axi_dw=32,
         buffer_depth        = 8,
+        axi_interface = None
     ):
         assert mode in ['master', 'slave'], "mode has to be master or slave"
         # Bus.
         # ----
         # TODO: Master/Slave distinction            
-        self.bus = AXILiteInterface()
+        self.bus = AXILiteInterface(data_width=axi_dw) if axi_interface == None else axi_interface
 
         self.aw_fifo           = aw_fifo    = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
         self.w_fifo            = w_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], buffer_depth, buffered=True))
