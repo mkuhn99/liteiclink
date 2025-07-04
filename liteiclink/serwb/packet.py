@@ -377,7 +377,6 @@ class AxiDepacketizer(LiteXModule):
         else:
             self.padded_endpoint = stream.Endpoint(stream.EndpointDescription(axi_endpoint.description.payload_layout + [('last_', 1), ('first_', 1)], axi_endpoint.description.param_layout))
         length = padded_dw//32
-        print(dw, padded_dw, length)
         self.source   = source   = stream.Endpoint(phy_description(padded_dw))
         self.cast = FullCast(source.description, self.padded_endpoint.description)
         self.sink = sink = stream.Endpoint(phy_description(32))
@@ -392,8 +391,6 @@ class AxiDepacketizer(LiteXModule):
             self.padded_endpoint.connect(axi_endpoint, omit={'pad', 'last_', 'first_'}),
             axi_endpoint.last.eq(self.padded_endpoint.last_),
             axi_endpoint.first.eq(self.padded_endpoint.first_),
-            # axi_endpoint.valid.eq(self.valid)
-            # converter.source.ready.eq(1),
         ]
         # # #
 
@@ -406,7 +403,6 @@ class AxiDepacketizer(LiteXModule):
         fsm.act("PREAMBLE",
             sink.ready.eq(1),
             converter.sink.valid.eq(0),
-            # self.cast.source.valid.eq(self.valid),
             If(sink.valid &
               (sink.data == 0x5aa55aa5),
                 NextState("DATA"),
@@ -421,23 +417,16 @@ class AxiDepacketizer(LiteXModule):
             If(sink.valid,
                 converter.sink.valid.eq(1),
                 converter.sink.data.eq(sink.data),
-                # source.ready.eq(converter.valid_token_count == length),
-                # If(length == 1,
-                #     NextState("PREAMBLE"),
-                # )
             ),
             If(timer.done,
                 NextState("PREAMBLE"),
             ),
-            If((converter.valid_token_count == (length - 1)),
+            If( converter.source.valid,
                     NextState("PREAMBLE"),
                     NextValue(self.valid, 1),
-                    # self.cast.source.valid.eq(1)
-
                 ),
             timer.wait.eq(1),
             If(source.ready,
                 NextValue(self.valid, 0),
             ),
-            #axi_endpoint.valid.eq(self.valid)
         )
