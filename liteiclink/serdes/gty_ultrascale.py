@@ -90,7 +90,7 @@ CLKIN +----> /M  +-->       Charge Pump         +-> VCO +---> CLKOUT
 # GTY Quad PLL -------------------------------------------------------------------------------------
 
 class GTYQuadPLL(LiteXModule):
-    def __init__(self, refclk, refclk_freq, linerate):
+    def __init__(self, refclk, refclk_freq, linerate, refclk_from_fabric=False):
         self.clk       = Signal()
         self.refclk    = Signal()
         self.reset     = Signal()
@@ -100,6 +100,10 @@ class GTYQuadPLL(LiteXModule):
 
         # DRP.
         self.drp = DRPInterface()
+
+        # SDM.
+        self.sdm0_data = Signal(24, reset=round(config["f"]*(2**24)))
+        self.sdm1_data = Signal(24, reset=round(config["f"]*(2**24)))
 
         # # #
 
@@ -182,10 +186,12 @@ class GTYQuadPLL(LiteXModule):
             p_QPLL1_SDM_CFG2        = 0b0000000000000000,
 
             # Common.
-            i_GTREFCLK00      = refclk if use_qpll0 else 0,
-            i_GTREFCLK01      = refclk if use_qpll1 else 0,
+            i_GTREFCLK00      = refclk if (use_qpll0 and not refclk_from_fabric) else 0,
+            i_GTREFCLK01      = refclk if (use_qpll1 and not refclk_from_fabric) else 0,
             i_GTREFCLK10      = 0,
             i_GTREFCLK11      = 0,
+            i_GTGREFCLK0      = refclk if refclk_from_fabric else 0,
+            i_GTGREFCLK1      = refclk if refclk_from_fabric else 0,
             i_QPLLRSVD1       = 0,
             i_QPLLRSVD2       = 0,
             i_QPLLRSVD3       = 0,
@@ -207,7 +213,7 @@ class GTYQuadPLL(LiteXModule):
             i_DRPWE           = self.drp.we,
 
             # QPLL0.
-            i_SDM0DATA        = round(config["f"]*(2**24)),
+            i_SDM0DATA        = self.sdm0_data,
             i_SDM0WIDTH       = 24,
             i_SDM0RESET       = 0b0,
             i_SDM0TOGGLE      = 0b0,
@@ -223,7 +229,7 @@ class GTYQuadPLL(LiteXModule):
             i_QPLL0RESET      = self.reset,
 
             # QPLL1.
-            i_SDM1DATA        = round(config["f"]*(2**24)),
+            i_SDM1DATA        = self.sdm1_data,
             i_SDM1WIDTH       = 24,
             i_SDM1RESET       = 0b0,
             i_SDM1TOGGLE      = 0b0,
@@ -251,7 +257,6 @@ class GTYQuadPLL(LiteXModule):
             else:
                 rate = 2 # Half
             vco_freq = pllclk_out*rate
-            print("vco_freq:", vco_freq)
             if 8e9 <= vco_freq <= 13e9:
                 qpll = "qpll1"
             elif 9.8e9 <= vco_freq <= 16.375e9:
