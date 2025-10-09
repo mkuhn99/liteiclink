@@ -58,7 +58,7 @@ class FakePHY(LiteXModule):
 # DUT Core -----------------------------------------------------------------------------------------
 
 class DUTCore(LiteXModule):
-    def __init__(self, **kwargs):
+    def __init__(self, axi_dw=32, **kwargs):
         # AXI slave
         self.slave_aw_phy = FakePHY()
         self.slave_w_phy = FakePHY()
@@ -66,7 +66,7 @@ class DUTCore(LiteXModule):
         self.slave_ar_phy = FakePHY()
         self.slave_b_phy = FakePHY()
         self.phy_slaves = phy_slaves = {'aw':self.slave_aw_phy, 'w':self.slave_w_phy, 'r':self.slave_r_phy, 'ar':self.slave_ar_phy, 'b':self.slave_b_phy}
-        serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave", buffer_depth=6)
+        serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave", buffer_depth=6, axi_dw=axi_dw)
         self.submodules += serwb_slave
 
 
@@ -78,7 +78,7 @@ class DUTCore(LiteXModule):
         self.master_b_phy = FakePHY()
 
         self.phy_masters = phy_masters = {'w':self.master_w_phy, 'aw':self.master_aw_phy, 'r':self.master_r_phy, 'ar':self.master_ar_phy, 'b':self.master_b_phy}
-        serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master", buffer_depth=6)
+        serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master", buffer_depth=6, axi_dw=axi_dw)
         self.submodules += serwb_master
         for k in CHANNELS:
             self.submodules += phy_slaves[k], phy_masters[k]
@@ -98,62 +98,164 @@ class DUTCore(LiteXModule):
 
 
 # Test SERWB Core ----------------------------------------------------------------------------------
+def write_nax(bus, addr, data, strb=None):
+    if strb is None:
+        strb = 2**len(bus.w.strb) - 1
+    # aw + w
+    yield bus.aw.valid.eq(1)
+    yield bus.aw.addr.eq(addr)
+    yield bus.w.data.eq(data)
+    yield bus.w.valid.eq(1)
+    yield bus.w.strb.eq(strb)
+    yield
+    while not (yield bus.aw.ready):
+        yield
+    yield bus.aw.valid.eq(0)
+    yield bus.aw.addr.eq(0)
+    while not (yield bus.w.ready):
+        yield
+    yield bus.w.valid.eq(0)
+    yield bus.w.strb.eq(0)
+    # b
+    yield bus.b.ready.eq(1)
+    while not (yield bus.b.valid):
+        yield
+    resp = (yield bus.b.resp)
+    yield bus.b.ready.eq(0)
+    yield
+    yield bus.b.ready.eq(1)
+    return resp
+
+def read_nax(bus, addr):
+    # ar
+    yield bus.ar.valid.eq(1)
+    yield bus.ar.addr.eq(addr)
+    yield
+    while not (yield bus.ar.ready):
+        yield
+    yield bus.ar.valid.eq(0)
+    # r
+    yield bus.r.ready.eq(1)
+    while not (yield bus.r.valid):
+        yield
+    data = (yield bus.r.data)
+    resp = (yield bus.r.resp)
+    yield bus.r.ready.eq(0)
+    yield
+    yield bus.r.ready.eq(1)
+    return (data, resp)
 
 class TestSERWBCore(unittest.TestCase):
-    def test_serwb(self):
-        def generator(dut):
-            # Prepare test
-            prng        = random.Random(42)
-            data_base   = 0x4
-            data_length = 5
-            datas_w     = [prng.randrange(2**32) for i in range(data_length)]
-            datas_r     = []
-            # Init:
 
-            for k in CHANNELS:
-                yield dut.phy_masters[k].serdes.rx_dp.sink.valid.eq(1)
-                yield dut.phy_slaves[k].serdes.rx_dp.sink.valid.eq(1)
-                yield dut.phy_masters[k].serdes.rx_dp.sink.ready.eq(1)
-                yield dut.phy_slaves[k].serdes.rx_dp.sink.ready.eq(1)
-                yield dut.phy_masters[k].serdes.tx_dp.source.ready.eq(1)
-                yield dut.phy_slaves[k].serdes.tx_dp.source.ready.eq(1)
-            # Write
-            yield
-            yield
-            yield
-            yield
-            yield
-            yield
-            for i in range(data_length):
-                yield from dut.axi_slave.write((data_base + i*4), datas_w[i])
+    def generator(self, dut, axi_dw=32):
+        # Prepare test
+        prng        = random.Random(42)
+        data_base   = 0x4
+        data_length = 5
+        datas_w     = [prng.randrange(2**axi_dw) for i in range(data_length)]
+        datas_r     = []
+        # Init:
 
-            # Read
-            for i in range(data_length):
-                print(i)
-                datas_r.append((yield from dut.axi_slave.read((data_base + i*4)))[0])
+        for k in CHANNELS:
+            yield dut.phy_masters[k].serdes.rx_dp.sink.valid.eq(1)
+            yield dut.phy_slaves[k].serdes.rx_dp.sink.valid.eq(1)
+            yield dut.phy_masters[k].serdes.rx_dp.sink.ready.eq(1)
+            yield dut.phy_slaves[k].serdes.rx_dp.sink.ready.eq(1)
+            yield dut.phy_masters[k].serdes.tx_dp.source.ready.eq(1)
+            yield dut.phy_slaves[k].serdes.tx_dp.source.ready.eq(1)
+        # Write
+        yield
+        yield
+        yield
+        yield
+        yield
+        yield
+        for i in range(data_length):
+            print(i)
+            yield from dut.axi_slave.write((data_base + i*(axi_dw//8)), datas_w[i])
 
-            # Check
-            print(datas_w)
-            print(datas_r)
-            for i in range(data_length):
-                print(hex(datas_r[i]))
-                if datas_r[i] != datas_w[i]:
-                    dut.errors += 1
-            # # Write
-            # for i in range(data_length):
-            #     print(i)
-            #     yield from dut.axi.write((data_base + i*4), datas_w[i])
-            #     if (yield from dut.axi.read((data_base + i*4)))[0] != datas_w[i]:
-            #         dut.errors += 1
-            # while not (yield dut.rx.sink.data == 0xB9):
-            #     yield
-            # yield dut.rx.sink.valid.eq(1)
-            # while not (yield dut.rx.invalid):
-            #     yield
+        # Read
+        for i in range(data_length):
+            print(i)
+            datas_r.append((yield from dut.axi_slave.read((data_base + i*(axi_dw//8))))[0])
+
+        # Check
+        print(datas_w)
+        print(datas_r)
+        for i in range(data_length):
+            print(hex(datas_r[i]))
+            if datas_r[i] != datas_w[i]:
+                dut.errors += 1
+        return dut
+    
+    def test_32bit(self):
             
-        dut = DUTCore()
+        dut = DUTCore(axi_dw=32)
         dut.errors = 0
-        run_simulation(dut, generator(dut), vcd_name='test_axi_datapath.vcd')
+        run_simulation(dut, self.generator(dut, 32), vcd_name='dp_32bit.vcd')
+        self.assertEqual(dut.errors, 0)
+
+    def test_64bit(self):
+            
+        dut = DUTCore(axi_dw=64)
+        dut.errors = 0
+        run_simulation(dut, self.generator(dut, 64))
+        self.assertEqual(dut.errors, 0)
+
+    def generator_nax(self, dut, axi_dw=32):
+        # Prepare test
+        prng        = random.Random(42)
+        data_base   = 0x4
+        data_length = 5
+        datas_w     = [prng.randrange(2**axi_dw) for i in range(data_length)]
+        datas_r     = []
+        # Init:
+
+        for k in CHANNELS:
+            yield dut.phy_masters[k].serdes.rx_dp.sink.valid.eq(1)
+            yield dut.phy_slaves[k].serdes.rx_dp.sink.valid.eq(1)
+            yield dut.phy_masters[k].serdes.rx_dp.sink.ready.eq(1)
+            yield dut.phy_slaves[k].serdes.rx_dp.sink.ready.eq(1)
+            yield dut.phy_masters[k].serdes.tx_dp.source.ready.eq(1)
+            yield dut.phy_slaves[k].serdes.tx_dp.source.ready.eq(1)
+        # Write
+        yield dut.axi_slave.b.ready.eq(1)
+        yield dut.axi_slave.r.ready.eq(1)
+        yield
+        yield
+        yield
+        yield
+        yield
+        yield
+        for i in range(data_length):
+            yield from write_nax(dut.axi_slave, (data_base + i*(axi_dw//8)), datas_w[i])
+
+        # Read
+        for i in range(data_length):
+            print(i)
+            datas_r.append((yield from read_nax(dut.axi_slave, (data_base + i*(axi_dw//8))))[0])
+
+        # Check
+        print(datas_w)
+        print(datas_r)
+        for i in range(data_length):
+            print(hex(datas_r[i]))
+            if datas_r[i] != datas_w[i]:
+                dut.errors += 1
+        return dut
+    
+    def test_nax_32bit(self):
+            
+        dut = DUTCore(axi_dw=32)
+        dut.errors = 0
+        run_simulation(dut, self.generator_nax(dut, 32), vcd_name='nax_axi.vcd')
+        self.assertEqual(dut.errors, 0)
+
+    def test_nax_64bit(self):
+            
+        dut = DUTCore(axi_dw=64)
+        dut.errors = 0
+        run_simulation(dut, self.generator_nax(dut, 64))
         self.assertEqual(dut.errors, 0)
 
 if __name__ == '__main__':

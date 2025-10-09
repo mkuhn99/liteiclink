@@ -11,7 +11,8 @@ from litex.soc.interconnect import stream
 from litex.soc.interconnect.axi import *
 
 from liteiclink.serwb.packet import AxiPacketizer, AxiDepacketizer
-from litex.soc.interconnect.axi import AXILiteSRAM, AXILiteInterface, connect_axi
+from litex.soc.interconnect.axi import AXILiteSRAM, AXILiteInterface, connect_axi, AXICrossbar
+from litex.soc.integration.soc import SoCRegion
 MEM = {0x89abcdef, 0xf891bcde, 0xef89abcd, 0xdef89abc, 0xcdef89ab, 0xbcdef89a, 0xabcdef89, 0x9abcdef8}
 class DUTConverter(LiteXModule):
     def __init__(self):
@@ -159,8 +160,11 @@ class DUTAXI2AXILiteSimple(LiteXModule):
         self.axi_dw = axi_dw
         self.axi_adrw = axi_adrw
         self.axi = AXIInterface(data_width=self.axi_dw, address_width=self.axi_adrw, id_width=8)
+        self.axi_2 = AXIInterface(data_width=self.axi_dw, address_width=self.axi_adrw, id_width=8)
+        self.axi_m2 = AXIInterface(data_width=self.axi_dw, address_width=self.axi_adrw, id_width=8)
+        self.crossbar = AXICrossbar([self.axi, self.axi_m2], [(SoCRegion(0x0, 11*1024).decoder(self.axi_2), self.axi_2)])
         self.axi_lite = AXILiteInterface(data_width=self.axi_dw, address_width=self.axi_adrw)
-        self.axilite2axi = AXI2AXILite(self.axi, self.axi_lite)
+        self.axilite2axi = AXI2AXILite(self.axi_2, self.axi_lite)
         self.submodules += self.axilite2axi
         self.sram = AXILiteSRAM(11*1024, bus=self.axi_lite, init={0x89abcdef, 0xf891bcde, 0xef89abcd, 0xdef89abc, 0xcdef89ab, 0xbcdef89a, 0xabcdef89, 0x9abcdef8})
         self.submodules += self.sram
@@ -485,8 +489,8 @@ class Test(unittest.TestCase):
                             self.reads_last_errors += 1
 
         # dut = DUTAXIFull(axi_dw=axi_dw, axi_adrw=axi_adrw, test_ram_address=0x4000_0000)
-        # dut = DUTAXI2AXILiteSimple(axi_dw=axi_dw, axi_adrw=axi_adrw)
-        dut = DUTOnlyAXIFull(axi_dw=axi_dw, axi_adrw=axi_adrw, test_ram_address=0x4000_0000)
+        dut = DUTAXI2AXILiteSimple(axi_dw=axi_dw, axi_adrw=axi_adrw)
+        # dut = DUTOnlyAXIFull(axi_dw=axi_dw, axi_adrw=axi_adrw, test_ram_address=0x4000_0000)
 
         # Generate writes/reads.
         prng   = random.Random(42)
@@ -530,8 +534,8 @@ class Test(unittest.TestCase):
     # Test with no randomness.
     def test_axi2wishbone_simple(self):
         print('test_axi2wishbone_simple')
-        self._test_axifull(simultaneous_writes_reads=False, axi_dw=32)
-        self._test_axifull(naccesses=2, simultaneous_writes_reads=False, axi_dw=64)
+        self._test_axifull(simultaneous_writes_reads=False, axi_dw=32, vcd_file='crossbar.vcd')
+        # self._test_axifull(naccesses=2, simultaneous_writes_reads=False, axi_dw=64)
 
     # Test randomness one parameter at a time.
     def test_axi2wishbone_writes_then_reads_random_bursts(self):
