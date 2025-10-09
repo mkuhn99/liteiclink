@@ -311,8 +311,6 @@ class FullCast(CombinatorialActor):
 # Packetizer ---------------------------------------------------------------------------------------
 # TODO: 
 # k-wort statt magic wort
-# axi-full: Buffer hinzufügen
-# schauen ob AXI-Lite noch funktioniert
 # mehrere converter&phys parallel
 class AxiPacketizer(LiteXModule):
     def __init__(self, axi_endpoint):
@@ -368,7 +366,7 @@ class AxiPacketizer(LiteXModule):
 # Depacketizer -------------------------------------------------------------------------------------
 
 class AxiDepacketizer(LiteXModule):
-    def __init__(self, clk_freq, axi_endpoint, timeout=10):
+    def __init__(self, clk_freq, axi_endpoint, timeout=10, buffer_depth=16):
         dw = sum([c[1] for c in axi_endpoint.description.payload_layout + axi_endpoint.description.param_layout]) + 2
         padded_dw = -(-dw//32)*32
         pad_w = padded_dw - dw
@@ -381,7 +379,7 @@ class AxiDepacketizer(LiteXModule):
         self.cast = FullCast(source.description, self.padded_endpoint.description)
         self.sink = sink = stream.Endpoint(phy_description(32))
         self.converter = converter = VT_Converter(32, padded_dw, report_valid_token_count=True)
-        self.buffer = stream.SyncFIFO(self.padded_endpoint.description, 16)
+        self.buffer = stream.SyncFIFO(self.padded_endpoint.description, buffer_depth)
         self.valid = Signal()
         self.comb += [
             self.converter.source.connect(self.source, omit={'valid_token_count'}),
