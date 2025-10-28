@@ -10,6 +10,7 @@ from litex.gen import *
 from litex.gen.genlib.misc import WaitTimer
 
 from litex.soc.interconnect        import stream
+from litex.soc.interconnect.csr    import CSRStatus, CSRStorage
 from litex.soc.interconnect.packet import HeaderField, Header
 from litex.soc.interconnect.stream import CombinatorialActor, Endpoint, _rawbits_layout
 # Layouts ------------------------------------------------------------------------------------------
@@ -313,19 +314,18 @@ class FullCast(CombinatorialActor):
 # k-wort statt magic wort
 # mehrere converter&phys parallel
 class AxiPacketizer(LiteXModule):
-    def __init__(self, axi_endpoint):
+    def __init__(self, axi_endpoint, packet_size=8):
         dw = sum([c[1] for c in axi_endpoint.description.payload_layout + axi_endpoint.description.param_layout ]) + 2
-        padded_dw = -(-dw//32)*32
+        padded_dw = -(-dw//packet_size)*packet_size
         pad_w = padded_dw - dw
-        length = padded_dw//32
         if pad_w != 0:
             self.padded_endpoint = padded_endpoint = stream.Endpoint(stream.EndpointDescription(axi_endpoint.description.payload_layout + [('pad', pad_w), ('last_', 1), ('first_', 1)], axi_endpoint.description.param_layout))
         else:
             self.padded_endpoint = padded_endpoint = stream.Endpoint(stream.EndpointDescription(axi_endpoint.description.payload_layout + [('last_', 1), ('first_', 1)], axi_endpoint.description.param_layout))
-        self.source = source = stream.Endpoint(phy_description(32))
+        self.source = source = stream.Endpoint(phy_description(packet_size))
         self.sink   = sink   = stream.Endpoint([('data', padded_dw)])
         self.cast = cast = FullCast(self.padded_endpoint.description, sink.description)
-        self.converter = converter = VT_Converter(padded_dw, 32, report_valid_token_count=True)
+        self.converter = converter = VT_Converter(padded_dw, packet_size, report_valid_token_count=True)
         self.comb += [
             axi_endpoint.connect(padded_endpoint, omit={'pad', 'last_', 'first_'}),
             padded_endpoint.last_.eq(axi_endpoint.last),
@@ -334,24 +334,23 @@ class AxiPacketizer(LiteXModule):
             cast.source.connect(sink),
             sink.connect(converter.sink),
             ]
-
+        self.transaction_cycles = CSRStorage(32, reset=0, write_from_dev=True)
+        magic_word = 0x5aa55aa5 if packet_size == 32 else 0x5a
         # FSM.
         # ----
         self.fsm = fsm = FSM(reset_state="PREAMBLE")
         fsm.act("PREAMBLE",
             sink.ready.eq(0),
-            # axi_endpoint.ready.eq(1),
             If(sink.valid,
-                # source.valid.eq(1),
-                # source.data.eq(0x5aa55aa5),
                 If(source.ready,
                     NextState("DATA"),
                     source.valid.eq(1),
-                    source.data.eq(0x5aa55aa5),
+                    source.data.eq(magic_word),
                 )
             )
         )
         fsm.act("DATA",
+            NextValue(self.transaction_cycles.storage, self.transaction_cycles.storage + 1),
             If(source.ready,
                 source.valid.eq(sink.valid),
                 source.data.eq(converter.source.data),
@@ -366,21 +365,21 @@ class AxiPacketizer(LiteXModule):
 # Depacketizer -------------------------------------------------------------------------------------
 
 class AxiDepacketizer(LiteXModule):
-    def __init__(self, clk_freq, axi_endpoint, timeout=10, buffer_depth=16):
+    def __init__(self, clk_freq, axi_endpoint, timeout=10, buffer_depth=16, packet_size=8):
         dw = sum([c[1] for c in axi_endpoint.description.payload_layout + axi_endpoint.description.param_layout]) + 2
-        padded_dw = -(-dw//32)*32
+        padded_dw = -(-dw//packet_size)*packet_size
         pad_w = padded_dw - dw
         if pad_w != 0:
             self.padded_endpoint = stream.Endpoint(stream.EndpointDescription(axi_endpoint.description.payload_layout + [('pad', pad_w)] + [('last_', 1), ('first_', 1)], axi_endpoint.description.param_layout))
         else:
             self.padded_endpoint = stream.Endpoint(stream.EndpointDescription(axi_endpoint.description.payload_layout + [('last_', 1), ('first_', 1)], axi_endpoint.description.param_layout))
-        length = padded_dw//32
         self.source   = source   = stream.Endpoint(phy_description(padded_dw))
         self.cast = FullCast(source.description, self.padded_endpoint.description)
-        self.sink = sink = stream.Endpoint(phy_description(32))
-        self.converter = converter = VT_Converter(32, padded_dw, report_valid_token_count=True)
+        self.sink = sink = stream.Endpoint(phy_description(packet_size))
+        self.converter = converter = VT_Converter(packet_size, padded_dw, report_valid_token_count=True)
         self.buffer = stream.SyncFIFO(self.padded_endpoint.description, buffer_depth)
-        self.valid = Signal()
+        self.packet_counter = Signal(5)
+        self.num_packets = -(-dw//packet_size)
         self.comb += [
             self.converter.source.connect(self.source, omit={'valid_token_count'}),
             self.source.connect(self.cast.sink),
@@ -390,11 +389,13 @@ class AxiDepacketizer(LiteXModule):
             axi_endpoint.last.eq(self.padded_endpoint.last_),
             axi_endpoint.first.eq(self.padded_endpoint.first_),
         ]
+        self.transaction_cycles = CSRStorage(32, reset=0, write_from_dev=True)
         # # #
 
         # Timer.
         # ------
         self.timer = timer = WaitTimer(clk_freq*timeout)
+        magic_word = 0x5aa55aa5 if packet_size == 32 else 0x5a
         # FSM.
         # ----
         self.fsm = fsm = FSM(reset_state="PREAMBLE")
@@ -402,16 +403,15 @@ class AxiDepacketizer(LiteXModule):
             sink.ready.eq(1),
             converter.sink.valid.eq(0),
             If(sink.valid &
-              (sink.data == 0x5aa55aa5),
+              (sink.data == magic_word),
                 NextState("DATA"),
                 NextValue(converter.valid_token_count, 0),
-            ),
-            If(source.ready,
-                NextValue(self.valid, 0),
-            ),
+            )
         )
         fsm.act("DATA",
             sink.ready.eq(1),
+            NextValue(self.transaction_cycles.storage, self.transaction_cycles.storage + 1),
+            NextValue(self.packet_counter, self.packet_counter + 1),
             If(sink.valid,
                 converter.sink.valid.eq(1),
                 converter.sink.data.eq(sink.data),
@@ -419,12 +419,9 @@ class AxiDepacketizer(LiteXModule):
             If(timer.done,
                 NextState("PREAMBLE"),
             ),
-            If( converter.source.valid,
+            If( self.packet_counter >= (self.num_packets - 1),
                     NextState("PREAMBLE"),
-                    NextValue(self.valid, 1),
+                    NextValue(self.packet_counter, 0)
                 ),
-            timer.wait.eq(1),
-            If(source.ready,
-                NextValue(self.valid, 0),
-            ),
+            timer.wait.eq(1)
         )

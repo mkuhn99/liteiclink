@@ -19,11 +19,11 @@ from liteiclink.serwb.scrambler import Scrambler, Descrambler
 # TX Datapath --------------------------------------------------------------------------------------
 
 class TXDatapath(LiteXModule):
-    def __init__(self, phy_dw, with_scrambling=False, packet_dw=32):
+    def __init__(self, phy_dw, with_scrambling=False, packet_size=32):
         self.idle   = idle   = Signal()
         self.comma  = comma  = Signal()
         self.wait   = wait   = Signal()
-        self.sink   = sink   = stream.Endpoint([("data", packet_dw)])
+        self.sink   = sink   = stream.Endpoint([("data", packet_size)])
         self.source = source = stream.Endpoint([("data", phy_dw)])
 
         # # #
@@ -35,12 +35,8 @@ class TXDatapath(LiteXModule):
 
         # Line coding.
         # ------------
-        nwords= packet_dw // 8
+        nwords= packet_size // 8
         self.encoder = encoder = StreamEncoder(nwords=nwords)
-
-        # Converter.
-        # ----------
-        self.converter = converter = stream.Converter(10*nwords, phy_dw)
 
         # Data-Path.
         # ----------
@@ -54,6 +50,12 @@ class TXDatapath(LiteXModule):
                 sink.connect(encoder.sink, omit={"data"}),
                 encoder.sink.d.eq(sink.data),
             ]
+
+        # Converter.
+        # ----------
+        self.converter = converter = stream.Converter(10*nwords, phy_dw)
+
+    
         self.comb += [
             encoder.source.connect(converter.sink),
             converter.source.connect(source),
@@ -65,8 +67,7 @@ class TXDatapath(LiteXModule):
             sink.ready.eq(0),
             converter.sink.valid.eq(1),
             converter.sink.data.eq(0),
-        )
-
+            )
         # Encode Comma (K28.5).
         # ---------------------
         self.comb += If(comma,
@@ -128,10 +129,10 @@ class RXAligner(LiteXModule):
 # RXDatapath ---------------------------------------------------------------------------------------
 
 class RXDatapath(LiteXModule):
-    def __init__(self, phy_dw, with_scrambling=False, packet_dw=32):
+    def __init__(self, phy_dw, with_scrambling=False, packet_size=32):
         self.shift_inc  = shift_inc  = Signal()
         self.sink       = sink       = stream.Endpoint([("data", phy_dw)])
-        self.source     = source     = stream.Endpoint([("data", packet_dw)])
+        self.source     = source     = stream.Endpoint([("data", packet_size)])
         self.idle       = idle       = Signal()
         self.comma      = comma      = Signal()
         self.wait       = wait       = Signal()
@@ -144,8 +145,7 @@ class RXDatapath(LiteXModule):
 
         # Converter.
         # ----------
-        nwords = packet_dw // 8
-        self.converter = converter = stream.Converter(phy_dw, 10*nwords)
+        nwords = packet_size // 8
 
         # Line Coding.
         # ------------
@@ -156,13 +156,25 @@ class RXDatapath(LiteXModule):
         if with_scrambling:
             self.descrambler = descrambler = Descrambler()
 
+        # Decode Idle.
+        # ------------
+        self.idle_timer = idle_timer = WaitTimer(32)
+
         # Dataflow.
         # ---------
+        self.converter = converter = stream.Converter(phy_dw, 10*nwords)
         self.comb += [
             sink.connect(aligner.sink),
             aligner.source.connect(converter.sink),
             converter.source.connect(decoder.sink),
-         ]
+        ]
+        self.sync += If(converter.source.valid,
+            idle_timer.wait.eq(
+                (converter.source.data == 0) |
+                (converter.source.data == (2**(nwords*10)-1))
+            )
+        )
+
         if with_scrambling:
             self.comb += [
                 decoder.source.connect(descrambler.sink),
@@ -178,15 +190,6 @@ class RXDatapath(LiteXModule):
                 )
             ]
 
-        # Decode Idle.
-        # ------------
-        self.idle_timer = idle_timer = WaitTimer(32)
-        self.sync += If(converter.source.valid,
-            idle_timer.wait.eq(
-                (converter.source.data == 0) |
-                (converter.source.data == (2**40-1))
-            )
-        )
         self.comb += idle.eq(idle_timer.done)
 
         # Decode Comma (K28.5).

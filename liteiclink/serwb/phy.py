@@ -14,6 +14,7 @@ from litex.soc.interconnect.csr import *
 
 from liteiclink.serwb.kuserdes import KUSerdes
 from liteiclink.serwb.s7serdes import S7Serdes
+from liteiclink.serwb.s6serdes import S6Serdes
 from liteiclink.serwb.efinixserdes import EfinixSerdes
 
 
@@ -31,7 +32,7 @@ from liteiclink.serwb.efinixserdes import EfinixSerdes
 
 @ResetInserter()
 class _SerdesMasterInit(LiteXModule):
-    def __init__(self, serdes, taps, timeout, clk_ratio="1:1"):
+    def __init__(self, serdes, taps, timeout, clk_ratio="1:1", encoded_packet_size=40):
         self.ready = Signal()
         self.error = Signal()
 
@@ -42,7 +43,7 @@ class _SerdesMasterInit(LiteXModule):
         self.delay_min_found = delay_min_found = Signal()
         self.delay_max       = delay_max       = Signal(max=taps)
         self.delay_max_found = delay_max_found = Signal()
-        self.shift           = shift           = Signal(max=40)
+        self.shift           = shift           = Signal(max=encoded_packet_size)
         self.phase_sel       = phase_sel       = Signal(2)
 
         # Timer.
@@ -118,7 +119,7 @@ class _SerdesMasterInit(LiteXModule):
         fsm.act("INC-DELAY-SHIFT",
             NextState("WAIT-STABLE"),
             If(delay == (taps - 1),
-                If(shift == (40 - 1),
+                If(shift == (encoded_packet_size - 1),
                     NextState("INC-PHASE-SEL")
                 ).Else(
                     NextValue(delay_min_found, 0),
@@ -178,7 +179,7 @@ class _SerdesMasterInit(LiteXModule):
 
 @ResetInserter()
 class _SerdesSlaveInit(LiteXModule):
-    def __init__(self, serdes, taps, timeout, clk_ratio="1:1"):
+    def __init__(self, serdes, taps, timeout, clk_ratio="1:1", encoded_packet_size=40):
         self.ready = Signal()
         self.error = Signal()
 
@@ -189,7 +190,7 @@ class _SerdesSlaveInit(LiteXModule):
         self.delay_min_found = delay_min_found = Signal()
         self.delay_max       = delay_max       = Signal(max=taps)
         self.delay_max_found = delay_max_found = Signal()
-        self.shift           = shift           = Signal(max=40)
+        self.shift           = shift           = Signal(max=encoded_packet_size)
         self.phase_sel       = phase_sel       = Signal(2)
 
         # Timer.
@@ -252,7 +253,7 @@ class _SerdesSlaveInit(LiteXModule):
         fsm.act("INC-DELAY-SHIFT",
             NextState("WAIT-STABLE"),
             If(delay == (taps - 1),
-                If(shift == (40 - 1),
+                If(shift == (encoded_packet_size - 1),
                     NextState("INC-PHASE-SEL")
                 ).Else(
                     NextValue(delay_min_found, 0),
@@ -395,9 +396,9 @@ class _SerdesControl(LiteXModule):
 # SERWB PHY ----------------------------------------------------------------------------------------
 
 class SERWBPHY(LiteXModule):
-    def __init__(self, device, pads, mode="master", init_timeout=2**16, clk="sys", clk4x="sys4x", clk_ratio="1:1", clk_delay_taps=0, rx_delay_taps=0, dw=32):
-        self.sink   = sink   = stream.Endpoint([("data", dw)])
-        self.source = source = stream.Endpoint([("data", dw)])
+    def __init__(self, device, pads, mode="master", init_timeout=2**16, clk="sys", clk4x="sys4x", clk_ratio="1:1", clk_delay_taps=0, rx_delay_taps=0, serdes_data_width=8, packet_size=32):
+        self.sink   = sink   = stream.Endpoint([("data", packet_size)])
+        self.source = source = stream.Endpoint([("data", packet_size)])
         assert mode in ["master", "slave"]
 
         # # #
@@ -409,14 +410,21 @@ class SERWBPHY(LiteXModule):
         if device[:4] in ["xcku", "xvu", "xczu"]:
             assert clk_ratio == "1:1"
             taps = 512
+            assert serdes_data_width==8
             self.serdes = KUSerdes(pads, mode)
 
         # Xilinx 7-Series.
         elif device[:4] in ["xc7a", "xc7k", "xc7v", "xc7z"]:
             assert clk_ratio == "1:1"
             taps = 32
-            self.serdes = S7Serdes(pads, mode, dw=dw)
-
+            self.serdes = S7Serdes(pads, mode, serdes_data_width, packet_size=packet_size)
+        
+        # Xilinx Spartan6
+        elif device[:4] == "xc6s":
+            # Be aware of Design Advisory for Spartan-6 Table2:
+            # https://support.xilinx.com/s/article/38408?language=en_US
+            taps = 255
+            self.serdes = S6Serdes(pads, mode, serdes_data_width)
 
         # Efinix Titanium.
         elif device[:2] == "Ti":
@@ -439,14 +447,14 @@ class SERWBPHY(LiteXModule):
             )
         else:
             raise NotImplementedError
-
+        encoded_packet_size = packet_size//8 * 10
         # SerDes Init.
         # ------------
         init_cls = {
             "master" : _SerdesMasterInit,
             "slave"  : _SerdesSlaveInit,
         }[mode]
-        self.init = init_cls(self.serdes, taps, init_timeout, clk_ratio)
+        self.init = init_cls(self.serdes, taps, init_timeout, clk_ratio, encoded_packet_size)
 
         # SerDes Control.
         # ---------------

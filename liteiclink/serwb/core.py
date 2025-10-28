@@ -114,7 +114,8 @@ class SERWBCore(LiteXModule):
 class SERWBCoreAXILite(LiteXModule):
     def __init__(self, phys, clk_freq, mode, axi_dw=32,
         buffer_depth        = 8,
-        axi_interface       = None
+        axi_interface       = None,
+        packet_size         = 32,
     ):
         assert mode in ['master', 'slave'], "mode has to be master or slave"
         # Bus.
@@ -122,22 +123,22 @@ class SERWBCoreAXILite(LiteXModule):
         # TODO: Master/Slave distinction            
         self.bus = AXILiteInterface(data_width=axi_dw) if axi_interface == None else axi_interface
 
-        self.aw_fifo           = aw_fifo    = ResetInserter()(stream.SyncFIFO([('data', 32)], 1, buffered=False))
-        self.w_fifo            = w_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], 1, buffered=False))
-        self.ar_fifo           = ar_fifo    = ResetInserter()(stream.SyncFIFO([('data', 32)], 1, buffered=False))
-        self.b_fifo            = b_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], 1, buffered=False))
-        self.r_fifo            = r_fifo     = ResetInserter()(stream.SyncFIFO([('data', 32)], 1, buffered=False))
+        self.aw_fifo           = aw_fifo    = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
+        self.w_fifo            = w_fifo     = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
+        self.ar_fifo           = ar_fifo    = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
+        self.b_fifo            = b_fifo     = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
+        self.r_fifo            = r_fifo     = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
 
         # Packetizer / Depacketizer.
         # --------------------------
 
         #TODO: make smart loop
         if mode=="slave":
-            self.aw_packetizer      = aw_packetizer     = ResetInserter()(AxiPacketizer(self.bus.aw))
-            self.w_packetizer       = w_packetizer      = ResetInserter()(AxiPacketizer(self.bus.w))
-            self.ar_packetizer      = ar_packetizer     = ResetInserter()(AxiPacketizer(self.bus.ar))
-            self.b_depacketizer     = b_depacketizer    = AxiDepacketizer(clk_freq, self.bus.b, buffer_depth=buffer_depth)
-            self.r_depacketizer     = r_depacketizer    = AxiDepacketizer(clk_freq, self.bus.r, buffer_depth=buffer_depth)
+            self.aw_packetizer      = aw_packetizer     = ResetInserter()(AxiPacketizer(self.bus.aw, packet_size=packet_size))
+            self.w_packetizer       = w_packetizer      = ResetInserter()(AxiPacketizer(self.bus.w, packet_size=packet_size))
+            self.ar_packetizer      = ar_packetizer     = ResetInserter()(AxiPacketizer(self.bus.ar, packet_size=packet_size))
+            self.b_depacketizer     = b_depacketizer    = AxiDepacketizer(clk_freq, self.bus.b, buffer_depth=buffer_depth, packet_size=packet_size)
+            self.r_depacketizer     = r_depacketizer    = AxiDepacketizer(clk_freq, self.bus.r, buffer_depth=buffer_depth, packet_size=packet_size)
 
             self.comb += [
                 aw_packetizer.source.connect(aw_fifo.sink),
@@ -159,11 +160,11 @@ class SERWBCoreAXILite(LiteXModule):
             ]
 
         else:
-            self.aw_depacketizer      = aw_depacketizer     = AxiDepacketizer(clk_freq, self.bus.aw, buffer_depth=buffer_depth)
-            self.w_depacketizer       = w_depacketizer      = AxiDepacketizer(clk_freq, self.bus.w, buffer_depth=buffer_depth)
-            self.ar_depacketizer      = ar_depacketizer     = AxiDepacketizer(clk_freq, self.bus.ar, buffer_depth=buffer_depth)
-            self.b_packetizer     = b_packetizer    = ResetInserter()(AxiPacketizer(self.bus.b))
-            self.r_packetizer     = r_packetizer    = ResetInserter()(AxiPacketizer(self.bus.r))
+            self.aw_depacketizer      = aw_depacketizer     = AxiDepacketizer(clk_freq, self.bus.aw, buffer_depth=buffer_depth, packet_size=packet_size)
+            self.w_depacketizer       = w_depacketizer      = AxiDepacketizer(clk_freq, self.bus.w, buffer_depth=buffer_depth, packet_size=packet_size)
+            self.ar_depacketizer      = ar_depacketizer     = AxiDepacketizer(clk_freq, self.bus.ar, buffer_depth=buffer_depth, packet_size=packet_size)
+            self.b_packetizer         = b_packetizer        = ResetInserter()(AxiPacketizer(self.bus.b, packet_size=packet_size))
+            self.r_packetizer         = r_packetizer        = ResetInserter()(AxiPacketizer(self.bus.r, packet_size=packet_size))
 
             self.comb += [
                 r_packetizer.source.connect(r_fifo.sink),
