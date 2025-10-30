@@ -111,11 +111,12 @@ class SERWBCore(LiteXModule):
 
 # SERWB Core ---------------------------------------------------------------------------------------
 
-class SERWBCoreAXILite(LiteXModule):
+class SERWBCoreAXI(LiteXModule):
     def __init__(self, phys, clk_freq, mode, axi_dw=32,
         buffer_depth        = 8,
         axi_interface       = None,
         packet_size         = 32,
+        n                   = 1,
     ):
         assert mode in ['master', 'slave'], "mode has to be master or slave"
         # Bus.
@@ -124,53 +125,55 @@ class SERWBCoreAXILite(LiteXModule):
         self.bus = AXILiteInterface(data_width=axi_dw) if axi_interface == None else axi_interface
 
         self.aw_fifo           = aw_fifo    = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
-        self.w_fifo            = w_fifo     = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
+        self.w_fifos           = w_fifos    = [ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False)) for _ in range(n)]
         self.ar_fifo           = ar_fifo    = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
         self.b_fifo            = b_fifo     = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
-        self.r_fifo            = r_fifo     = ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False))
+        self.r_fifos           = r_fifos    = [ResetInserter()(stream.SyncFIFO([('data', packet_size)], 1, buffered=False)) for _ in range(n)]
 
         # Packetizer / Depacketizer.
         # --------------------------
 
         #TODO: make smart loop
         if mode=="slave":
+            self.w_splitter         = w_splitter        = stream.StreamSplitter(self.bus.w, n)
+            self.r_merger           = r_merger          = stream.StreamMerger(self.bus.r, n)
             self.aw_packetizer      = aw_packetizer     = ResetInserter()(AxiPacketizer(self.bus.aw, packet_size=packet_size))
-            self.w_packetizer       = w_packetizer      = ResetInserter()(AxiPacketizer(self.bus.w, packet_size=packet_size))
+            self.w_packetizers      = w_packetizers     = [ResetInserter()(AxiPacketizer(self.w_splitter.sources[i], packet_size=packet_size)) for i in range(n)]
             self.ar_packetizer      = ar_packetizer     = ResetInserter()(AxiPacketizer(self.bus.ar, packet_size=packet_size))
             self.b_depacketizer     = b_depacketizer    = AxiDepacketizer(clk_freq, self.bus.b, buffer_depth=buffer_depth, packet_size=packet_size)
-            self.r_depacketizer     = r_depacketizer    = AxiDepacketizer(clk_freq, self.bus.r, buffer_depth=buffer_depth, packet_size=packet_size)
-
+            self.r_depacketizers    = r_depacketizers   = [AxiDepacketizer(clk_freq, self.r_merger.sinks[i], buffer_depth=buffer_depth, packet_size=packet_size) for i in range(n)]
+            # self.r_depacketizer     = r_depacketizer    = AxiDepacketizer(clk_freq, self.bus.r, buffer_depth=buffer_depth, packet_size=packet_size)
             self.comb += [
                 aw_packetizer.source.connect(aw_fifo.sink),
                 aw_fifo.source.connect(phys["aw"].sink),
 
-
-                w_packetizer.source.connect(w_fifo.sink),
-                w_fifo.source.connect(phys["w"].sink),
-                
                 ar_packetizer.source.connect(ar_fifo.sink),
                 ar_fifo.source.connect(phys["ar"].sink),
 
                 phys["b"].source.connect(b_fifo.sink),
                 b_fifo.source.connect(b_depacketizer.sink),
-
-                phys["r"].source.connect(r_fifo.sink),
-                r_fifo.source.connect(r_depacketizer.sink),
-                
             ]
-
+            for i in range(n):
+                self.submodules += self.w_packetizers[i], w_fifos[i]
+                self.comb += [
+                    w_packetizers[i].source.connect(w_fifos[i].sink),
+                    w_fifos[i].source.connect(phys[f"w{i}"].sink),
+                ]
+                self.submodules += self.r_depacketizers[i], r_fifos[i]
+                self.comb += [
+                    phys[f"r{i}"].source.connect(r_fifos[i].sink),
+                    r_fifos[i].source.connect(r_depacketizers[i].sink),
+                ]
         else:
+            self.r_splitter           = r_splitter        = stream.StreamSplitter(self.bus.r, n)
+            self.w_merger             = w_merger          = stream.StreamMerger(self.bus.w, n)
             self.aw_depacketizer      = aw_depacketizer     = AxiDepacketizer(clk_freq, self.bus.aw, buffer_depth=buffer_depth, packet_size=packet_size)
-            self.w_depacketizer       = w_depacketizer      = AxiDepacketizer(clk_freq, self.bus.w, buffer_depth=buffer_depth, packet_size=packet_size)
+            self.w_depacketizers      = w_depacketizers     = [AxiDepacketizer(clk_freq, self.w_merger.sinks[i], buffer_depth=buffer_depth, packet_size=packet_size) for i in range(n)]
             self.ar_depacketizer      = ar_depacketizer     = AxiDepacketizer(clk_freq, self.bus.ar, buffer_depth=buffer_depth, packet_size=packet_size)
             self.b_packetizer         = b_packetizer        = ResetInserter()(AxiPacketizer(self.bus.b, packet_size=packet_size))
-            self.r_packetizer         = r_packetizer        = ResetInserter()(AxiPacketizer(self.bus.r, packet_size=packet_size))
+            self.r_packetizers        = r_packetizers       = [ResetInserter()(AxiPacketizer(self.r_splitter.sources[i], packet_size=packet_size)) for i in range(n)]
 
             self.comb += [
-                r_packetizer.source.connect(r_fifo.sink),
-                r_fifo.source.connect(phys["r"].sink),
-
-
                 b_packetizer.source.connect(b_fifo.sink),
                 b_fifo.source.connect(phys["b"].sink),
 
@@ -179,11 +182,18 @@ class SERWBCoreAXILite(LiteXModule):
 
                 phys["aw"].source.connect(aw_fifo.sink),
                 aw_fifo.source.connect(aw_depacketizer.sink),
-
-                phys["w"].source.connect(w_fifo.sink),
-                w_fifo.source.connect(w_depacketizer.sink),
-                
             ]
+            for i in range(n):
+                self.submodules += self.w_depacketizers[i], w_fifos[i]
+                self.comb += [
+                    phys[f"w{i}"].source.connect(w_fifos[i].sink),
+                    w_fifos[i].source.connect(w_depacketizers[i].sink),
+                ]
+                self.submodules += self.r_packetizers[i], r_fifos[i]
+                self.comb += [
+                    r_packetizers[i].source.connect(r_fifos[i].sink),
+                    r_fifos[i].source.connect(phys[f"r{i}"].sink)
+                ]
 
 
 # SERIO Core ---------------------------------------------------------------------------------------
