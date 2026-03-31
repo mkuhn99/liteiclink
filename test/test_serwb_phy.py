@@ -16,7 +16,7 @@ from litex.gen.sim import *
 from litex.soc.interconnect import stream
 
 from liteiclink.serwb import scrambler
-from liteiclink.serwb.core import SERWBCoreAXILite
+from liteiclink.serwb.core import SERWBCoreAXI
 
 from litex.soc.interconnect.wishbone import SRAM
 from litex.soc.interconnect.axi import AXILiteSRAM, AXILiteInterface, AXIInterface, AXI2AXILite
@@ -135,7 +135,7 @@ class _SerdesSlaveInitInitLowerTaps(_SerdesSlaveInit):
 
 @ResetInserter()
 class _SerdesMasterInitInstant(LiteXModule):
-    def __init__(self, serdes, taps, timeout, clk_ratio="1:1"):
+    def __init__(self, serdes, taps, timeout, stable_timeout, delay_width, clk_ratio="1:1", encoded_packet_size=40, debug=False):
         self.ready = Signal()
         self.error = Signal()
 
@@ -155,7 +155,7 @@ class _SerdesMasterInitInstant(LiteXModule):
         ]
 @ResetInserter()
 class _SerdesSlaveInitInstant(LiteXModule):
-    def __init__(self, serdes, taps, timeout, clk_ratio="1:1"):
+    def __init__(self, serdes, taps, timeout, stable_timeout, delay_width, clk_ratio="1:1", encoded_packet_size=40, debug=False):
         self.ready = Signal()
         self.error = Signal()
 
@@ -190,15 +190,15 @@ class DUT(Module):
                             Record([('rx_p', 1), ('rx_n', 1),
                                    ('tx_p', 1), ('tx_n', 1)]),]
         # note init_timeout master doesn't sync < 2**5 ?
-        self.master_aw_phy = SERWBPHY(device="xc7a", pads=self.master_pads[0], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_w_phy = SERWBPHY(device="xc7a", pads=self.master_pads[1], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_r_phy = SERWBPHY(device="xc7a", pads=self.master_pads[2], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_ar_phy = SERWBPHY(device="xc7a", pads=self.master_pads[3], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_b_phy = SERWBPHY(device="xc7a", pads=self.master_pads[4], dw=32, mode="slave", init_timeout=2**to_e)
+        self.master_aw_phy = SERWBPHY(device="xc7a", pads=self.master_pads[0],packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_w_phy = SERWBPHY(device="xc7a", pads=self.master_pads[1],packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_r_phy = SERWBPHY(device="xc7a", pads=self.master_pads[2],packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_ar_phy = SERWBPHY(device="xc7a", pads=self.master_pads[3],packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_b_phy = SERWBPHY(device="xc7a", pads=self.master_pads[4],packet_size=32, mode="slave", init_timeout=2**to_e)
 
 
-        self.master_phys = phy_masters = {'w':self.master_w_phy, 'aw':self.master_aw_phy, 'r':self.master_r_phy, 'ar':self.master_ar_phy, 'b':self.master_b_phy}
-        self.master_core = SERWBCoreAXILite(self.master_phys, mode='master', clk_freq=CLK, axi_dw=axi_dw)
+        self.master_phys = phy_masters = {'w0':self.master_w_phy, 'aw':self.master_aw_phy, 'r0':self.master_r_phy, 'ar':self.master_ar_phy, 'b':self.master_b_phy}
+        self.master_core = SERWBCoreAXI(self.master_phys, mode='master', clk_freq=CLK, axi_dw=axi_dw)
         self.submodules += self.master_core
 
         self.slave_pads = [Record([('clk_p',1), ('clk_n',1),
@@ -213,14 +213,14 @@ class DUT(Module):
                             Record([('rx_p', 1), ('rx_n', 1),
                                    ('tx_p', 1), ('tx_n', 1)]),]
         
-        self.slave_aw_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[0], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_w_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[1], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_r_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[2], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_ar_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[3], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_b_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[4], dw=32, mode="master", init_timeout=2**to_e)
+        self.slave_aw_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[0], packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_w_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[1],packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_r_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[2], packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_ar_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[3], packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_b_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[4], packet_size=32, mode="master", init_timeout=2**to_e)
 
-        self.slave_phys = phy_slaves = {'aw':self.slave_aw_phy, 'w':self.slave_w_phy, 'r':self.slave_r_phy, 'ar':self.slave_ar_phy, 'b':self.slave_b_phy}
-        self.slave_core = SERWBCoreAXILite(self.slave_phys, mode='slave', clk_freq=CLK, axi_dw=axi_dw)
+        self.slave_phys = phy_slaves = {'aw':self.slave_aw_phy, 'w0':self.slave_w_phy, 'r0':self.slave_r_phy, 'ar':self.slave_ar_phy, 'b':self.slave_b_phy}
+        self.slave_core = SERWBCoreAXI(self.slave_phys, mode='slave', clk_freq=CLK, axi_dw=axi_dw)
         self.submodules += self.slave_core
         delay = 2
         for i,k in enumerate(['aw', 'w', 'ar', 'r', 'b']):
@@ -379,15 +379,15 @@ class DUTAxiFull(Module):
                             Record([('rx_p', 1), ('rx_n', 1),
                                    ('tx_p', 1), ('tx_n', 1)]),]
         # note init_timeout master doesn't sync < 2**5 ?
-        self.master_aw_phy = SERWBPHY(device="xc7a", pads=self.master_pads[0], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_w_phy = SERWBPHY(device="xc7a", pads=self.master_pads[1], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_r_phy = SERWBPHY(device="xc7a", pads=self.master_pads[2], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_ar_phy = SERWBPHY(device="xc7a", pads=self.master_pads[3], dw=32, mode="slave", init_timeout=2**to_e)
-        self.master_b_phy = SERWBPHY(device="xc7a", pads=self.master_pads[4], dw=32, mode="slave", init_timeout=2**to_e)
+        self.master_aw_phy = SERWBPHY(device="xc7a", pads=self.master_pads[0], packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_w_phy = SERWBPHY(device="xc7a", pads=self.master_pads[1], packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_r_phy = SERWBPHY(device="xc7a", pads=self.master_pads[2], packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_ar_phy = SERWBPHY(device="xc7a", pads=self.master_pads[3], packet_size=32, mode="slave", init_timeout=2**to_e)
+        self.master_b_phy = SERWBPHY(device="xc7a", pads=self.master_pads[4], packet_size=32, mode="slave", init_timeout=2**to_e)
 
 
-        self.master_phys = phy_masters = {'w':self.master_w_phy, 'aw':self.master_aw_phy, 'r':self.master_r_phy, 'ar':self.master_ar_phy, 'b':self.master_b_phy}
-        self.master_core = SERWBCoreAXILite(self.master_phys, mode='master', clk_freq=CLK, axi_interface=self.axi_out)
+        self.master_phys = phy_masters = {'w0':self.master_w_phy, 'aw':self.master_aw_phy, 'r0':self.master_r_phy, 'ar':self.master_ar_phy, 'b':self.master_b_phy}
+        self.master_core = SERWBCoreAXI(self.master_phys, mode='master', clk_freq=CLK, axi_interface=self.axi_out)
         self.submodules += self.master_core
 
         self.slave_pads = [Record([('clk_p',1), ('clk_n',1),
@@ -402,17 +402,17 @@ class DUTAxiFull(Module):
                             Record([('rx_p', 1), ('rx_n', 1),
                                    ('tx_p', 1), ('tx_n', 1)]),]
         
-        self.slave_aw_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[0], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_w_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[1], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_r_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[2], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_ar_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[3], dw=32, mode="master", init_timeout=2**to_e)
-        self.slave_b_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[4], dw=32, mode="master", init_timeout=2**to_e)
+        self.slave_aw_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[0], packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_w_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[1], packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_r_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[2], packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_ar_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[3], packet_size=32, mode="master", init_timeout=2**to_e)
+        self.slave_b_phy = SERWBPHY(device="xc7a", pads=self.slave_pads[4], packet_size=32, mode="master", init_timeout=2**to_e)
 
-        self.slave_phys = phy_slaves = {'aw':self.slave_aw_phy, 'w':self.slave_w_phy, 'r':self.slave_r_phy, 'ar':self.slave_ar_phy, 'b':self.slave_b_phy}
-        self.slave_core = SERWBCoreAXILite(self.slave_phys, mode='slave', clk_freq=CLK, axi_interface=self.axi)
+        self.slave_phys = phy_slaves = {'aw':self.slave_aw_phy, 'w0':self.slave_w_phy, 'r0':self.slave_r_phy, 'ar':self.slave_ar_phy, 'b':self.slave_b_phy}
+        self.slave_core = SERWBCoreAXI(self.slave_phys, mode='slave', clk_freq=CLK, axi_interface=self.axi)
         self.submodules += self.slave_core
         delay = 2
-        for i,k in enumerate(['aw', 'w', 'ar', 'r', 'b']):
+        for i,k in enumerate(['aw', 'w0', 'ar', 'r0', 'b']):
             self.submodules += self.master_phys[k], self.slave_phys[k]
             # self.comb += [
             #     self.master_phys[k].serdes.rx.source.ready.eq(1),

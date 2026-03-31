@@ -79,7 +79,7 @@ class DUTAXI(LiteXModule):
         self.submodules += self.sram
 
 class DUTOnlyAXIFull(LiteXModule):
-    def __init__(self, axi_dw=32, axi_adrw=32, test_ram_address=0x4000_0000, packet_size=32, **kwargs):
+    def __init__(self, axi_dw=32, axi_adrw=32, n=3, packet_size=32, **kwargs):
         self.axi_dw = axi_dw
         self.axi_adrw = axi_adrw
         self.axi = AXIInterface(data_width=self.axi_dw, address_width=self.axi_adrw, id_width=8)
@@ -87,6 +87,8 @@ class DUTOnlyAXIFull(LiteXModule):
 
         self.ar_packetizer = AxiPacketizer(axi_endpoint=self.axi.ar, packet_size=packet_size)
         self.aw_packetizer = AxiPacketizer(axi_endpoint=self.axi.aw, packet_size=packet_size)
+        # self.w_splitter = stream.StreamSplitter(self.axi.w, n=n)
+        # self.w_packetizers = [AxiPacketizer(axi_endpoint=self.w_splitter.sources[i], packet_size=packet_size) for i in range(n)]
         self.w_packetizer = AxiPacketizer(axi_endpoint=self.axi.w, packet_size=packet_size)
         self.b_depacketizer = AxiDepacketizer(axi_endpoint=self.axi.b, clk_freq=int(1e6), packet_size=packet_size)
         self.r_depacketizer = AxiDepacketizer(axi_endpoint=self.axi.r, clk_freq=int(1e6), packet_size=packet_size)
@@ -95,15 +97,21 @@ class DUTOnlyAXIFull(LiteXModule):
         self.aw_depacketizer = AxiDepacketizer(axi_endpoint=self.axi_out.aw, clk_freq=int(1e6), packet_size=packet_size)
         self.ar_depacketizer = AxiDepacketizer(axi_endpoint=self.axi_out.ar, clk_freq=int(1e6), packet_size=packet_size)
         self.w_depacketizer = AxiDepacketizer(axi_endpoint=self.axi_out.w, clk_freq=int(1e6), packet_size=packet_size)
+        # self.w_merger = stream.StreamMerger(self.axi_out.w, n)
+        # self.w_depacketizers = [AxiDepacketizer(axi_endpoint=self.w_merger.sinks[i], clk_freq=int(1e6), packet_size=packet_size) for i in range(n)]
         self.b_packetizer = AxiPacketizer(axi_endpoint=self.axi_out.b, packet_size=packet_size)
         self.r_packetizer = AxiPacketizer(axi_endpoint=self.axi_out.r, packet_size=packet_size)
         self.comb += [
             self.aw_packetizer.source.connect(self.aw_depacketizer.sink),
             self.ar_packetizer.source.connect(self.ar_depacketizer.sink),
-            self.w_packetizer.source.connect(self.w_depacketizer.sink),
             self.b_packetizer.source.connect(self.b_depacketizer.sink),
             self.r_packetizer.source.connect(self.r_depacketizer.sink),
+            self.w_packetizer.source.connect(self.w_depacketizer.sink),
         ]
+        # self.submodules += self.w_splitter, self.w_merger
+        # for i in range(n):
+        #     self.submodules += self.w_depacketizers[i], self.w_packetizers[i]
+        #     self.comb += [self.w_packetizers[i].source.connect(self.w_depacketizers[i].sink)]
         self.ram_bus = ram_bus =  AXILiteInterface(data_width=self.axi_dw, address_width=self.axi_adrw)
 
         self.sram = AXILiteSRAM(11*1024, bus=ram_bus, init={0x89abcdef, 0xf891bcde, 0xef89abcd, 0xdef89abc, 0xcdef89ab, 0xbcdef89a, 0xabcdef89, 0x9abcdef8})
@@ -140,7 +148,6 @@ class DUTAXIFull(LiteXModule):
         self.comb += [
             self.aw_packetizer.source.connect(self.aw_depacketizer.sink),
             self.ar_packetizer.source.connect(self.ar_depacketizer.sink),
-            self.w_packetizer.source.connect(self.w_depacketizer.sink),
             self.b_packetizer.source.connect(self.b_depacketizer.sink),
             self.r_packetizer.source.connect(self.r_depacketizer.sink),
         ]
@@ -535,7 +542,7 @@ class Test(unittest.TestCase):
     # Test with no randomness.
     def test_axi2wishbone_simple(self):
         print('test_axi2wishbone_simple')
-        self._test_axifull(simultaneous_writes_reads=False, axi_dw=64, packet_size=8, vcd_file='crossbar.vcd')
+        self._test_axifull(simultaneous_writes_reads=False, axi_dw=64, packet_size=32, vcd_file='crossbar.vcd')
         #self._test_axifull(naccesses=2, simultaneous_writes_reads=False, axi_dw=64)
 
     # Test randomness one parameter at a time.

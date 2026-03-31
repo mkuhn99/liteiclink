@@ -18,7 +18,7 @@ from litex.gen.sim import *
 from litex.soc.interconnect import stream, axi
 
 from liteiclink.serwb import scrambler
-from liteiclink.serwb.core import SERWBCoreAXILite
+from liteiclink.serwb.core import SERWBCoreAXI
 
 from litex.soc.interconnect.axi import *
 
@@ -87,19 +87,20 @@ class DUTScrambler(LiteXModule):
 # DUT Core -----------------------------------------------------------------------------------------
 
 class DUTCore(LiteXModule):
-    def __init__(self, **kwargs):
+    def __init__(self, packet_size, n, **kwargs):
+        serdes_channels = ['aw', 'ar', 'b'] + [f"w{i}" for i in range(n)] + [f"r{i}" for i in range(n)]
         # AXI slave
-        phy_slaves = {k:FakePHY(dw=32) for k in ['aw', 'ar', 'w', 'b', 'r']}
-        serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave")
+        phy_slaves = {k:FakePHY(dw=32) for k in serdes_channels}
+        serwb_slave = SERWBCoreAXI(phy_slaves, int(1e6), parallel_data_channels=n, packet_size=packet_size, mode="slave")
         self.submodules += serwb_slave
 
 
         # AXI master
 
-        phy_masters = {k:FakePHY(dw=32) for k in ['aw', 'ar', 'w', 'b', 'r']}
-        serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master")
+        phy_masters = {k:FakePHY(dw=32) for k in serdes_channels}
+        serwb_master = SERWBCoreAXI(phy_masters, int(1e6), parallel_data_channels=n, packet_size=packet_size, mode="master")
         self.submodules += serwb_master
-        for k in ['aw', 'w', 'ar', 'r', 'b']:
+        for k in serdes_channels:
             self.submodules += phy_slaves[k], phy_masters[k]
             # Connect phy
             self.comb += [
@@ -122,22 +123,24 @@ class DUTCore(LiteXModule):
 # DUT AXIFullCore -----------------------------------------------------------------------------------------
 
 class DUTAXIFullCore(LiteXModule):
-    def __init__(self, dw=32,**kwargs):
+    def __init__(self, dw=32, n=1, packet_size=32, **kwargs):
+        serdes_channels = ['aw', 'ar', 'b'] + [f"w{i}" for i in range(n)] + [f"r{i}" for i in range(n)]
+        print(serdes_channels)
         # AXI slave
 
         self.axi = AXIInterface(data_width=dw, id_width=8)
-        phy_slaves = {k:FakePHY(dw=32) for k in ['aw', 'ar', 'w', 'b', 'r']}
-        serwb_slave = SERWBCoreAXILite(phy_slaves, int(1e6), mode="slave", axi_interface=self.axi)
+        phy_slaves = {k:FakePHY(dw=packet_size) for k in serdes_channels}
+        serwb_slave = SERWBCoreAXI(phy_slaves, int(1e6), mode="slave", axi_interface=self.axi, parallel_data_channels=n, packet_size=packet_size)
         self.submodules += serwb_slave
 
 
         # AXI master
 
-        phy_masters = {k:FakePHY(dw=32) for k in ['aw', 'ar', 'w', 'b', 'r']}
+        phy_masters = {k:FakePHY(dw=packet_size) for k in serdes_channels}
         self.axi_out = AXIInterface(data_width=dw, id_width=8)
-        serwb_master = SERWBCoreAXILite(phy_masters, int(1e6), mode="master", axi_interface=self.axi_out)
+        serwb_master = SERWBCoreAXI(phy_masters, int(1e6), mode="master", axi_interface=self.axi_out, parallel_data_channels=n, packet_size=packet_size)
         self.submodules += serwb_master
-        for k in ['aw', 'w', 'ar', 'r', 'b']:
+        for k in serdes_channels:
             self.submodules += phy_slaves[k], phy_masters[k]
             # Connect phy
             self.comb += [
@@ -274,7 +277,7 @@ class TestSERWBCore(unittest.TestCase):
                 if datas_r[i] != datas_w[i]:
                     dut.errors += 1
 
-        dut = DUTCore()
+        dut = DUTCore(n=2, packet_size=10)
         dut.errors = 0
         run_simulation(dut, generator(dut), vcd_name='test.vcd')
         self.assertEqual(dut.errors, 0)
@@ -298,6 +301,8 @@ class TestSERWBCore(unittest.TestCase):
         axi_dw           = 32, 
         axi_adrw         = 32,
         vcd_file         = None,
+        packet_size      = 32,
+        n                = 1,
         ):
 
         def writes_cmd_generator(axi_port, writes):
@@ -433,9 +438,9 @@ class TestSERWBCore(unittest.TestCase):
                         if (yield axi_port.r.last) != 0:
                             self.reads_last_errors += 1
 
-        # dut = DUTAXIFull(axi_dw=axi_dw, axi_adrw=axi_adrw, test_ram_address=0x4000_0000)
+        dut = DUTAXIFullCore(axi_dw=axi_dw, axi_adrw=axi_adrw, test_ram_address=0x4000_0000)
         # dut = DUTAXI2AXILiteSimple(axi_dw=axi_dw, axi_adrw=axi_adrw)
-        dut = DUTAXIFullCore(dw=axi_dw)
+        # dut = DUTCore(n=n, packet_size=packet_size)
 
         # Generate writes/reads.
         prng   = random.Random(42)
@@ -479,8 +484,8 @@ class TestSERWBCore(unittest.TestCase):
     # Test with no randomness.
     def test_axi2wishbone_simple(self):
         print('test_axi2wishbone_simple')
-        self._test_axifull(simultaneous_writes_reads=False, axi_dw=32)
-        self._test_axifull(simultaneous_writes_reads=False, axi_dw=64)
+        #self._test_axifull(simultaneous_writes_reads=False, axi_dw=32)
+        self._test_axifull(simultaneous_writes_reads=False, axi_dw=64, n=1, packet_size=32, vcd_file='test_axi_core.vcd')
 
     # Test randomness one parameter at a time.
     def test_axi2wishbone_writes_then_reads_random_bursts(self):
