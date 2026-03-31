@@ -17,6 +17,8 @@ from liteiclink.serwb.s7serdes import S7Serdes
 from liteiclink.serwb.s6serdes import S6Serdes
 from liteiclink.serwb.efinixserdes import EfinixSerdes
 
+from litex.soc.cores.code_8b10b import Encoder
+from litex.soc.interconnect.csr import CSRStorage
 
 # SerDes Initialization/Synchronisation ------------------------------------------------------------
 #
@@ -26,13 +28,14 @@ from liteiclink.serwb.efinixserdes import EfinixSerdes
 # - 4) Master stops sending K28.5 commas.
 # - 5) Slave stops sending K28.5 commas.
 # - 6) Physical link is ready.
+# - shift/bitslip operation different for s7serdes as they use mode='DDR' for ISERDESE2 (see https://docs.amd.com/v/u/en-US/ug471_7Series_SelectIO p. 159)
 # --------------------------------------------------------------------------------------------------
 
 # Serdes Master Init -------------------------------------------------------------------------------
 
 @ResetInserter()
 class _SerdesMasterInit(LiteXModule):
-    def __init__(self, serdes, taps, timeout, clk_ratio="1:1", encoded_packet_size=40):
+    def __init__(self, serdes, taps, timeout, stable_timeout=2**13, clk_ratio="1:1", encoded_packet_size=40, delay_width=9, debug=False):
         self.ready = Signal()
         self.error = Signal()
 
@@ -45,10 +48,39 @@ class _SerdesMasterInit(LiteXModule):
         self.delay_max_found = delay_max_found = Signal()
         self.shift           = shift           = Signal(max=encoded_packet_size)
         self.phase_sel       = phase_sel       = Signal(2)
+        self.correct_comma_counter             = Signal(log2_int(stable_timeout) + 1)
+        self.comma_error                       = Signal()
+        self.idle_counter    = idle_counter    = CSRStatus(8)
+        self.sync += [If(serdes.rx.idle, idle_counter.status.eq(idle_counter.status + 1))]
 
+        if debug:
+            data_size = log2_int(taps) + log2_int(encoded_packet_size, need_pow2=False) + log2_int(stable_timeout) + 1
+            storage_depth = taps*encoded_packet_size
+            self.counter_data = stream.Endpoint([("tap",log2_int(taps)), ("shift",log2_int(encoded_packet_size, need_pow2=False)), ("counter",log2_int(stable_timeout) + 1)])
+            self.counter_fifo = stream.SyncFIFO([("tap",log2_int(taps)), ("shift",log2_int(encoded_packet_size, need_pow2=False)), ("counter",log2_int(stable_timeout) + 1)], depth=storage_depth)
+            self.comb += [self.counter_data.connect(self.counter_fifo.sink)]
+            self.counter_csr = CSRStatus(data_size)
+            self.sync += [
+                If(self.counter_csr.we & self.counter_fifo.source.valid,
+                self.counter_csr.status.eq(Cat(*self.counter_fifo.source.payload.flatten())),
+                self.counter_fifo.source.ready.eq(1),
+                ).Else(
+                If(self.counter_fifo.depth == 0 , self.counter_csr.status.eq(0xffffffff)),
+                self.counter_fifo.source.ready.eq(0),
+                )
+            ]
+            save_data = [
+                self.counter_data.tap.eq(delay),
+                self.counter_data.shift.eq(shift),
+                self.counter_data.counter.eq(self.correct_comma_counter),
+                self.counter_data.valid.eq(1),
+            ]
+        else:
+            save_data = []
         # Timer.
         # ------
         self.timer = timer = WaitTimer(timeout)
+        self.stable_timer = stable_timer =  WaitTimer(stable_timeout)
 
         # FSM.
         # ----
@@ -95,23 +127,46 @@ class _SerdesMasterInit(LiteXModule):
         )
         fsm.act("CHECK-PATTERN",
             If(~delay_min_found,
-                If(serdes.rx.comma,
-                    timer.wait.eq(1),
-                    If(timer.done,
-                        timer.wait.eq(0),
+                stable_timer.wait.eq(1),
+                If(stable_timer.done,
+                    stable_timer.wait.eq(0),
+                    save_data,
+                    If(self.comma_error,
+                        NextState("INC-DELAY-SHIFT")
+                    ).Else(
                         NextValue(delay_min, delay),
                         NextValue(delay_min_found, 1),
-                    )
+                        NextState("INC-DELAY-SHIFT")
+                    ),
+                    NextValue(self.comma_error, 0),
+                    NextValue(self.correct_comma_counter, 0)
                 ).Else(
-                    NextState("INC-DELAY-SHIFT")
-                ),
+                    If(serdes.rx.comma,
+                        NextValue(self.correct_comma_counter, self.correct_comma_counter + 1),
+                    ).Else(
+                        NextValue(self.comma_error, 1),
+                    ),
+                )
             ).Else(
-                If(~serdes.rx.comma | (delay == (taps - 1)),
-                    NextValue(delay_max, delay),
-                    NextValue(delay_max_found, 1),
-                    NextState("CHECK-SAMPLING-WINDOW")
+                stable_timer.wait.eq(1),
+                If(stable_timer.done,
+                   stable_timer.wait.eq(0),
+                   save_data,
+                   If(self.comma_error | (delay == (taps - 1)),
+                        NextValue(delay_max, delay),
+                        NextValue(delay_max_found, 1),
+                        NextState("CHECK-SAMPLING-WINDOW"),
+                   ).Else(
+                        NextState("INC-DELAY-SHIFT")
+                   ),
+                    NextValue(self.comma_error, 0),
+                    NextValue(self.correct_comma_counter, 0)
                 ).Else(
-                    NextState("INC-DELAY-SHIFT")
+                    If(serdes.rx.comma,
+                        NextValue(self.correct_comma_counter, self.correct_comma_counter + 1),
+                    ).Else(
+                        NextValue(self.comma_error, 1),
+                    ),
                 )
             ),
             serdes.tx.comma.eq(1)
@@ -148,7 +203,7 @@ class _SerdesMasterInit(LiteXModule):
             )
         )
         fsm.act("CHECK-SAMPLING-WINDOW",
-            If((delay_max - delay_min) < taps//16,
+            If((delay_max - delay_min) < delay_width,
                NextValue(delay_min_found, 0),
                NextValue(delay_max_found, 0),
                NextState("WAIT-STABLE")
@@ -161,7 +216,8 @@ class _SerdesMasterInit(LiteXModule):
         )
         fsm.act("CONFIGURE-SAMPLING-WINDOW",
             If(delay == (delay_min + (delay_max - delay_min)[1:]),
-                NextState("READY")
+                NextState("READY"),
+                NextValue(idle_counter.status, 0),
             ).Else(
                 NextValue(delay, delay + 1),
                 serdes.rx.delay_inc.eq(1)
@@ -169,7 +225,7 @@ class _SerdesMasterInit(LiteXModule):
             serdes.tx.comma.eq(1)
         )
         fsm.act("READY",
-            self.ready.eq(1)
+            self.ready.eq(1),
         )
         fsm.act("ERROR",
             self.error.eq(1)
@@ -179,7 +235,7 @@ class _SerdesMasterInit(LiteXModule):
 
 @ResetInserter()
 class _SerdesSlaveInit(LiteXModule):
-    def __init__(self, serdes, taps, timeout, clk_ratio="1:1", encoded_packet_size=40):
+    def __init__(self, serdes, taps, timeout, stable_timeout=2**16, clk_ratio="1:1", encoded_packet_size=40, delay_width=9, debug=False):
         self.ready = Signal()
         self.error = Signal()
 
@@ -192,11 +248,38 @@ class _SerdesSlaveInit(LiteXModule):
         self.delay_max_found = delay_max_found = Signal()
         self.shift           = shift           = Signal(max=encoded_packet_size)
         self.phase_sel       = phase_sel       = Signal(2)
-
+        self.correct_comma_counter = Signal(log2_int(stable_timeout) + 1)
+        self.comma_error = Signal()
+        self.idle_counter    = idle_counter    = CSRStatus(8)
+        self.sync += [If(serdes.rx.idle, idle_counter.status.eq(idle_counter.status + 1))]
+        if debug:
+            data_size = log2_int(taps) + log2_int(encoded_packet_size, need_pow2=False) + log2_int(stable_timeout) + 1
+            storage_depth = taps*encoded_packet_size
+            self.counter_data = stream.Endpoint([("tap",log2_int(taps)), ("shift",log2_int(encoded_packet_size, need_pow2=False)), ("counter",log2_int(stable_timeout) + 1)])
+            self.counter_fifo = stream.SyncFIFO([("tap",log2_int(taps)), ("shift",log2_int(encoded_packet_size, need_pow2=False)), ("counter",log2_int(stable_timeout) + 1)], depth=storage_depth)
+            self.comb += [self.counter_data.connect(self.counter_fifo.sink)]
+            self.counter_csr = CSRStatus(data_size)
+            self.sync += [
+                If(self.counter_csr.we & self.counter_fifo.source.valid,
+                self.counter_csr.status.eq(Cat(*self.counter_fifo.source.payload.flatten())),
+                self.counter_fifo.source.ready.eq(1),
+                ).Else(
+                If(self.counter_fifo.depth == 0 , self.counter_csr.status.eq(0xffffffff)),
+                self.counter_fifo.source.ready.eq(0),
+                )
+            ]
+            save_data = [
+                self.counter_data.tap.eq(delay),
+                self.counter_data.shift.eq(shift),
+                self.counter_data.counter.eq(self.correct_comma_counter),
+                self.counter_data.valid.eq(1),
+            ]
+        else:
+            save_data = []
         # Timer.
         # ------
         self.timer = timer = WaitTimer(timeout)
-
+        self.stable_timer = stable_timer = WaitTimer(stable_timeout)
         # FSM.
         # ----
         self.fsm = fsm = FSM(reset_state="RESET")
@@ -229,23 +312,46 @@ class _SerdesSlaveInit(LiteXModule):
         )
         fsm.act("CHECK-PATTERN",
             If(~delay_min_found,
-                If(serdes.rx.comma,
-                    timer.wait.eq(1),
-                    If(timer.done,
-                        timer.wait.eq(0),
+                stable_timer.wait.eq(1),
+                If(stable_timer.done,
+                    stable_timer.wait.eq(0),
+                    save_data,
+                    If(self.comma_error,
+                        NextState("INC-DELAY-SHIFT")
+                    ).Else(
                         NextValue(delay_min, delay),
                         NextValue(delay_min_found, 1),
-                    )
+                        NextState("INC-DELAY-SHIFT")
+                    ),
+                    NextValue(self.comma_error, 0),
+                    NextValue(self.correct_comma_counter, 0)
                 ).Else(
-                    NextState("INC-DELAY-SHIFT")
-                ),
+                    If(serdes.rx.comma,
+                        NextValue(self.correct_comma_counter, self.correct_comma_counter + 1),
+                    ).Else(
+                        NextValue(self.comma_error, 1),
+                    ),
+                )
             ).Else(
-                If(~serdes.rx.comma | (delay == (taps - 1)),
-                    NextValue(delay_max, delay),
-                    NextValue(delay_max_found, 1),
-                    NextState("CHECK-SAMPLING-WINDOW")
+                stable_timer.wait.eq(1),
+                If(stable_timer.done,
+                   stable_timer.wait.eq(0),
+                   save_data,
+                   If(self.comma_error | (delay == (taps - 1)),
+                        NextValue(delay_max, delay),
+                        NextValue(delay_max_found, 1),
+                        NextState("CHECK-SAMPLING-WINDOW"),
+                   ).Else(
+                        NextState("INC-DELAY-SHIFT")
+                   ),
+                    NextValue(self.comma_error, 0),
+                    NextValue(self.correct_comma_counter, 0)
                 ).Else(
-                    NextState("INC-DELAY-SHIFT")
+                    If(serdes.rx.comma,
+                        NextValue(self.correct_comma_counter, self.correct_comma_counter + 1),
+                    ).Else(
+                        NextValue(self.comma_error, 1),
+                    ),
                 )
             ),
             serdes.tx.idle.eq(1)
@@ -282,7 +388,7 @@ class _SerdesSlaveInit(LiteXModule):
             )
         )
         fsm.act("CHECK-SAMPLING-WINDOW",
-            If((delay_max - delay_min) < taps//16,
+            If((delay_max - delay_min) < delay_width,
                NextValue(delay_min_found, 0),
                NextValue(delay_max_found, 0),
                NextState("WAIT-STABLE")
@@ -306,7 +412,8 @@ class _SerdesSlaveInit(LiteXModule):
             timer.wait.eq(1),
             If(timer.done,
                 If(~serdes.rx.comma,
-                    NextState("READY")
+                    NextState("READY"),
+                    NextValue(idle_counter.status, 0),
                 )
             ),
             serdes.tx.comma.eq(1)
@@ -396,7 +503,9 @@ class _SerdesControl(LiteXModule):
 # SERWB PHY ----------------------------------------------------------------------------------------
 
 class SERWBPHY(LiteXModule):
-    def __init__(self, device, pads, mode="master", init_timeout=2**16, clk="sys", clk4x="sys4x", clk_ratio="1:1", clk_delay_taps=0, rx_delay_taps=0, serdes_data_width=8, packet_size=32):
+    def __init__(self, device, pads, mode="master", init_timeout=2**16, clk="sys", clk4x="sys4x", clk_ratio="1:1", 
+                 clk_delay_taps=0, rx_delay_taps=0, serdes_data_width=8, packet_size=32, delay_width=9, 
+                 stable_timeout=2**13, idelay_refclk=200.0, debug=False):
         self.sink   = sink   = stream.Endpoint([("data", packet_size)])
         self.source = source = stream.Endpoint([("data", packet_size)])
         assert mode in ["master", "slave"]
@@ -417,7 +526,7 @@ class SERWBPHY(LiteXModule):
         elif device[:4] in ["xc7a", "xc7k", "xc7v", "xc7z"]:
             assert clk_ratio == "1:1"
             taps = 32
-            self.serdes = S7Serdes(pads, mode, serdes_data_width, packet_size=packet_size)
+            self.serdes = S7Serdes(pads, mode, serdes_data_width, packet_size=packet_size, idelay_refclk=idelay_refclk)
         
         # Xilinx Spartan6
         elif device[:4] == "xc6s":
@@ -454,7 +563,9 @@ class SERWBPHY(LiteXModule):
             "master" : _SerdesMasterInit,
             "slave"  : _SerdesSlaveInit,
         }[mode]
-        self.init = init_cls(self.serdes, taps, init_timeout, clk_ratio, encoded_packet_size)
+        self.init = init_cls(serdes=self.serdes, taps=taps, timeout=init_timeout, clk_ratio=clk_ratio, 
+                                encoded_packet_size=encoded_packet_size, delay_width=delay_width, 
+                                stable_timeout=stable_timeout, debug=debug)
 
         # SerDes Control.
         # ---------------
