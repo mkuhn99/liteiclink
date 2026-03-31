@@ -177,7 +177,7 @@ class _S7SerdesTX(LiteXModule):
 # S7 SerDes RX -------------------------------------------------------------------------------------
 
 class _S7SerdesRX(LiteXModule):
-    def __init__(self, pads, data_width=8, packet_size=32):
+    def __init__(self, pads, data_width=8, packet_size=32, idelay_refclk=200.0):
         assert data_width in [4,6,8,10,14] # valid serdese2 ddr rates
         if data_width>=10:
             assert hasattr(pads, "rx_p"), "Width expansion can only be used for differential outputs"
@@ -192,6 +192,7 @@ class _S7SerdesRX(LiteXModule):
 
         # Datapath
         self.source = source = stream.Endpoint([("data", packet_size)])
+        self.sink = sink = stream.Endpoint([("data", data_width)])
 
         # # #
 
@@ -217,7 +218,7 @@ class _S7SerdesRX(LiteXModule):
                 p_SIGNAL_PATTERN        = "DATA",
                 p_CINVCTRL_SEL          = "FALSE",
                 p_HIGH_PERFORMANCE_MODE = "TRUE",
-                p_REFCLK_FREQUENCY      = 200.0,
+                p_REFCLK_FREQUENCY      = idelay_refclk,
                 p_PIPE_SEL              = "FALSE",
                 p_IDELAY_TYPE           = "VARIABLE",
                 p_IDELAY_VALUE          = 0,
@@ -283,6 +284,8 @@ class _S7SerdesRX(LiteXModule):
         self.comb += [
             datapath.sink.valid.eq(1),
             datapath.sink.data.eq(data),
+            self.sink.valid.eq(1),
+            self.sink.data.eq(data),
             datapath.shift_inc.eq(self.shift_inc & (_shift == data_width-1)),
             datapath.source.connect(source),
             idle.eq(datapath.idle),
@@ -293,9 +296,11 @@ class _S7SerdesRX(LiteXModule):
 
 @ResetInserter()
 class S7Serdes(LiteXModule):
-    def __init__(self, pads, mode="master", data_width=8, packet_size=32):
+    def __init__(self, pads, mode="master", data_width=8, packet_size=32, idelay_refclk=200.0):
         assert mode in ["master", "slave"]
         if hasattr(pads, "clk_p") or hasattr(pads, "clk"):
             self.clocking = _S7SerdesClocking(pads, mode, data_width)
+        self.packet_size = packet_size
+        self.data_width = data_width
         self.tx       = _S7SerdesTX(pads, data_width, packet_size=packet_size)
-        self.rx       = _S7SerdesRX(pads, data_width, packet_size=packet_size)
+        self.rx       = _S7SerdesRX(pads, data_width, packet_size=packet_size, idelay_refclk=idelay_refclk)

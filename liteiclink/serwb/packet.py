@@ -310,9 +310,6 @@ class FullCast(CombinatorialActor):
         self.comb += Cat(*sigs_to).eq(Cat(*sigs_from))
 
 # Packetizer ---------------------------------------------------------------------------------------
-# TODO: 
-# k-wort statt magic wort
-# mehrere converter&phys parallel
 class AxiPacketizer(LiteXModule):
     def __init__(self, axi_endpoint, packet_size=8):
         dw = sum([c[1] for c in axi_endpoint.description.payload_layout + axi_endpoint.description.param_layout ]) + 2
@@ -335,6 +332,9 @@ class AxiPacketizer(LiteXModule):
             sink.connect(converter.sink),
             ]
         self.transaction_cycles = CSRStorage(32, reset=0, write_from_dev=True)
+        self.transaction_counter = CSRStorage(32, reset=0, write_from_dev=True)
+        self.source_notready_counter = CSRStorage(32, reset=0, write_from_dev=True)
+
         magic_word = 0x5aa55aa5 if packet_size == 32 else 0x5a
         # FSM.
         # ----
@@ -356,9 +356,12 @@ class AxiPacketizer(LiteXModule):
                 source.data.eq(converter.source.data),
                 sink.ready.eq(converter.source.valid_token_count),
                 converter.source.ready.eq(1),
+            ).Else(
+                NextValue(self.source_notready_counter.storage, self.source_notready_counter.storage + 1),
             ),
             If(converter.sink.ready,
-                NextState("PREAMBLE")
+                NextState("PREAMBLE"),
+                NextValue(self.transaction_counter.storage, self.transaction_counter.storage + 1)
             )
         )
 
@@ -390,6 +393,9 @@ class AxiDepacketizer(LiteXModule):
             axi_endpoint.first.eq(self.padded_endpoint.first_),
         ]
         self.transaction_cycles = CSRStorage(32, reset=0, write_from_dev=True)
+        self.transaction_counter = CSRStorage(32, reset=0, write_from_dev=True)
+        self.timeout_counter = CSRStorage(32, reset=0, write_from_dev=True)
+        self.sink_invalid_counter = CSRStorage(32, reset=0, write_from_dev=True)
         # # #
 
         # Timer.
@@ -415,13 +421,17 @@ class AxiDepacketizer(LiteXModule):
             If(sink.valid,
                 converter.sink.valid.eq(1),
                 converter.sink.data.eq(sink.data),
+            ).Else(
+                NextValue(self.sink_invalid_counter.storage, self.sink_invalid_counter.storage + 1),
             ),
             If(timer.done,
                 NextState("PREAMBLE"),
+                NextValue(self.timeout_counter.storage, self.timeout_counter.storage + 1),
             ),
             If( self.packet_counter >= (self.num_packets - 1),
                     NextState("PREAMBLE"),
-                    NextValue(self.packet_counter, 0)
+                    NextValue(self.packet_counter, 0),
+                    NextValue(self.transaction_counter.storage, self.transaction_counter.storage + 1),
                 ),
             timer.wait.eq(1)
         )

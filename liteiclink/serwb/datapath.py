@@ -158,7 +158,7 @@ class RXDatapath(LiteXModule):
 
         # Decode Idle.
         # ------------
-        self.idle_timer = idle_timer = WaitTimer(32)
+        self.idle_timer = idle_timer = WaitTimer(packet_size)
 
         # Dataflow.
         # ---------
